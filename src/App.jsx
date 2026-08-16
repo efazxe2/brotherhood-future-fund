@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Shield, Lock, ShieldCheck, AlertTriangle, Clock, Layers, Target,
   Wallet, Search, UserPlus, Trash2, X, Check, TrendingUp,
-  LayoutGrid, Users, Receipt, Pencil, ChevronRight, Activity, KeyRound, Wrench
+  LayoutGrid, Users, Receipt, Pencil, ChevronRight, Activity, KeyRound, Wrench,
+  Megaphone, AtSign, Plus
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
@@ -183,6 +184,7 @@ export default function App() {
   const [members, setMembers] = useState([]);
   const [payments, setPayments] = useState({});
   const [lateFees, setLateFees] = useState({});
+  const [notices, setNotices] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [connError, setConnError] = useState(false);
 
@@ -199,13 +201,14 @@ export default function App() {
   /* ---------------- Supabase: fetch + realtime ---------------- */
 
   const fetchAll = useCallback(async () => {
-    const [membersRes, paymentsRes, lateFeesRes] = await Promise.all([
+    const [membersRes, paymentsRes, lateFeesRes, noticesRes] = await Promise.all([
       supabase.from("members").select("*").order("id"),
       supabase.from("payments").select("*"),
       supabase.from("late_fees").select("*"),
+      supabase.from("notices").select("*").order("created_at", { ascending: false }),
     ]);
 
-    if (membersRes.error || paymentsRes.error || lateFeesRes.error) {
+    if (membersRes.error || paymentsRes.error || lateFeesRes.error || noticesRes.error) {
       setConnError(true);
       return null;
     }
@@ -222,7 +225,12 @@ export default function App() {
       lateFeesObj[row.member_id] = Number(row.amount);
     });
 
-    return { members: membersRes.data || [], payments: paymentsObj, lateFees: lateFeesObj };
+    return {
+      members: membersRes.data || [],
+      payments: paymentsObj,
+      lateFees: lateFeesObj,
+      notices: noticesRes.data || [],
+    };
   }, []);
 
   useEffect(() => {
@@ -233,6 +241,7 @@ export default function App() {
         setMembers(d.members);
         setPayments(d.payments);
         setLateFees(d.lateFees);
+        setNotices(d.notices);
       }
       if (!cancelled) setLoaded(true);
     })();
@@ -246,6 +255,7 @@ export default function App() {
         setMembers(d.members);
         setPayments(d.payments);
         setLateFees(d.lateFees);
+        setNotices(d.notices);
       }
     };
 
@@ -254,6 +264,7 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "members" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "payments" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "late_fees" }, refetch)
+      .on("postgres_changes", { event: "*", schema: "public", table: "notices" }, refetch)
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
@@ -322,6 +333,20 @@ export default function App() {
     const { error } = await supabase.from("members").update({ shares }).eq("id", memberId);
     if (error) { showToast("Couldn't update shares"); return; }
     showToast("Shares updated");
+  };
+
+  const doAddNotice = async (message, mentionedMemberId) => {
+    const { error } = await supabase
+      .from("notices")
+      .insert({ message, mentioned_member_id: mentionedMemberId || null });
+    if (error) { showToast("Couldn't post notice"); return; }
+    showToast("Notice posted");
+  };
+
+  const doDeleteNotice = async (id) => {
+    const { error } = await supabase.from("notices").delete().eq("id", id);
+    if (error) { showToast("Couldn't remove notice"); return; }
+    showToast("Notice removed");
   };
 
   /* ---------------- render ---------------- */
@@ -395,6 +420,10 @@ export default function App() {
             monthlyTotals={monthlyTotals}
             totalMaintenanceFee={totalMaintenanceFee}
             maintenanceFeeCollected={maintenanceFeeCollected}
+            notices={notices}
+            isAdmin={isAdmin}
+            onAddNotice={() => setModal({ type: "addNotice" })}
+            onDeleteNotice={(id) => setModal({ type: "confirmDeleteNotice", payload: id })}
           />
         )}
 
@@ -488,6 +517,19 @@ export default function App() {
           }}
         />
       )}
+      {modal?.type === "addNotice" && (
+        <AddNoticeModal
+          members={members}
+          onClose={() => setModal(null)}
+          onSave={async (message, mentionedId) => { await doAddNotice(message, mentionedId); setModal(null); }}
+        />
+      )}
+      {modal?.type === "confirmDeleteNotice" && (
+        <ConfirmDeleteNoticeModal
+          onClose={() => setModal(null)}
+          onConfirm={async () => { await doDeleteNotice(modal.payload); setModal(null); }}
+        />
+      )}
       {modal?.type === "editPayment" && (
         <EditNumberModal
           title="Record Payment"
@@ -515,13 +557,96 @@ export default function App() {
 /* Tabs                                                                  */
 /* ------------------------------------------------------------------ */
 
+function timeAgo(dateStr) {
+  const d = new Date(dateStr);
+  const diffMs = Date.now() - d.getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
 function OverviewTab({
   collectedPrincipal, progressPct, totalPendingDues, penaltyPool, elapsed,
   members, totalShares, yearlyTarget, remainingDues, monthlyTotals,
   totalMaintenanceFee, maintenanceFeeCollected,
+  notices, isAdmin, onAddNotice, onDeleteNotice,
 }) {
+  const memberById = {};
+  members.forEach((m) => { memberById[m.id] = m; });
+
   return (
     <div style={{ padding: "12px 16px 0" }}>
+      <div className="bff-card" style={{ padding: 18, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Megaphone size={16} color="#5bb8ff" />
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Notices</span>
+          </div>
+          {isAdmin && (
+            <button onClick={onAddNotice} className="bff-addbtn" style={{ padding: "0 14px", height: 34 }}>
+              <Plus size={14} /> Post
+            </button>
+          )}
+        </div>
+
+        {notices.length === 0 ? (
+          <div style={{ fontSize: 13, color: "#5b6478", padding: "6px 2px" }}>
+            No notices yet.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {notices.map((n) => {
+              const mentioned = n.mentioned_member_id ? memberById[n.mentioned_member_id] : null;
+              return (
+                <div
+                  key={n.id}
+                  style={{
+                    padding: "12px 14px", borderRadius: 11, background: "rgba(255,255,255,0.02)",
+                    border: "1px solid rgba(255,255,255,0.06)",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {mentioned && (
+                        <span style={{
+                          display: "inline-flex", alignItems: "center", gap: 4,
+                          padding: "3px 9px", borderRadius: 999, marginBottom: 7,
+                          background: "rgba(91,184,255,0.12)", border: "1px solid rgba(91,184,255,0.35)",
+                          color: "#5bb8ff", fontSize: 12, fontWeight: 700,
+                        }}>
+                          <AtSign size={11} /> {mentioned.name}
+                        </span>
+                      )}
+                      <div style={{ fontSize: 14, color: "#e2e6f0", lineHeight: 1.45, wordBreak: "break-word" }}>
+                        {n.message}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: "#5b6478", marginTop: 6 }}>{timeAgo(n.created_at)}</div>
+                    </div>
+                    {isAdmin && (
+                      <button
+                        onClick={() => onDeleteNotice(n.id)}
+                        style={{
+                          width: 30, height: 30, borderRadius: 9, background: "rgba(248,113,113,0.08)",
+                          border: "1px solid rgba(248,113,113,0.25)", display: "flex", alignItems: "center",
+                          justifyContent: "center", color: "#f87171", cursor: "pointer", flexShrink: 0,
+                        }}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       <div className="bff-card" style={{ padding: 22, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <span style={{ fontSize: 12, letterSpacing: 0.8, color: "#8b93a7", fontWeight: 700, textTransform: "uppercase" }}>
@@ -976,6 +1101,74 @@ function AddMemberModal({ onClose, onSave }) {
           style={{ ...inputStyle, marginBottom: 22 }}
         />
         <button onClick={submit} className="bff-primarybtn">Add to Fund</button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function AddNoticeModal({ members, onClose, onSave }) {
+  const [message, setMessage] = useState("");
+  const [mentionedId, setMentionedId] = useState("");
+
+  const submit = () => {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    onSave(trimmed, mentionedId ? parseInt(mentionedId, 10) : null);
+  };
+
+  return (
+    <ModalShell onClose={onClose}>
+      <div style={{ padding: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <span style={{ fontSize: 17, fontWeight: 800, color: "#f4f6fb" }}>Post Notice</span>
+          <button onClick={onClose} style={closeBtnStyle}><X size={18} color="#8b93a7" /></button>
+        </div>
+
+        <label style={labelStyle}>Message</label>
+        <textarea
+          autoFocus
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          placeholder="e.g. Please clear your September dues by the 25th."
+          rows={4}
+          style={{ ...inputStyle, marginBottom: 16, resize: "vertical", fontFamily: "inherit" }}
+        />
+
+        <label style={labelStyle}>Mention a member (optional)</label>
+        <select
+          value={mentionedId}
+          onChange={(e) => setMentionedId(e.target.value)}
+          style={{ ...inputStyle, marginBottom: 22 }}
+        >
+          <option value="">No one specific</option>
+          {members.map((m) => (
+            <option key={m.id} value={m.id}>{m.name}</option>
+          ))}
+        </select>
+
+        <button onClick={submit} className="bff-primarybtn">Post Notice</button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ConfirmDeleteNoticeModal({ onClose, onConfirm }) {
+  return (
+    <ModalShell onClose={onClose}>
+      <div style={{ padding: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: "rgba(248,113,113,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Trash2 size={18} color="#f87171" />
+          </div>
+          <span style={{ fontSize: 17, fontWeight: 800, color: "#f4f6fb" }}>Remove Notice</span>
+        </div>
+        <div style={{ fontSize: 14, color: "#8b93a7", marginBottom: 22, lineHeight: 1.5 }}>
+          Remove this notice for everyone? This can't be undone.
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onClose} className="bff-secondarybtn">Cancel</button>
+          <button onClick={onConfirm} className="bff-dangerbtn">Remove</button>
+        </div>
       </div>
     </ModalShell>
   );
