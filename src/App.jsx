@@ -3,7 +3,7 @@ import {
   Shield, Lock, ShieldCheck, AlertTriangle, Clock, Layers, Target,
   Wallet, Search, UserPlus, Trash2, X, Check, TrendingUp,
   LayoutGrid, Users, Receipt, Pencil, ChevronRight, Activity, KeyRound, Wrench,
-  Megaphone, AtSign, Plus
+  Megaphone, AtSign, Plus, History
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
@@ -185,6 +185,7 @@ export default function App() {
   const [payments, setPayments] = useState({});
   const [lateFees, setLateFees] = useState({});
   const [notices, setNotices] = useState([]);
+  const [activityLog, setActivityLog] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [connError, setConnError] = useState(false);
 
@@ -201,14 +202,15 @@ export default function App() {
   /* ---------------- Supabase: fetch + realtime ---------------- */
 
   const fetchAll = useCallback(async () => {
-    const [membersRes, paymentsRes, lateFeesRes, noticesRes] = await Promise.all([
+    const [membersRes, paymentsRes, lateFeesRes, noticesRes, activityRes] = await Promise.all([
       supabase.from("members").select("*").order("id"),
       supabase.from("payments").select("*"),
       supabase.from("late_fees").select("*"),
       supabase.from("notices").select("*").order("created_at", { ascending: false }),
+      supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(200),
     ]);
 
-    if (membersRes.error || paymentsRes.error || lateFeesRes.error || noticesRes.error) {
+    if (membersRes.error || paymentsRes.error || lateFeesRes.error || noticesRes.error || activityRes.error) {
       setConnError(true);
       return null;
     }
@@ -230,6 +232,7 @@ export default function App() {
       payments: paymentsObj,
       lateFees: lateFeesObj,
       notices: noticesRes.data || [],
+      activityLog: activityRes.data || [],
     };
   }, []);
 
@@ -242,6 +245,7 @@ export default function App() {
         setPayments(d.payments);
         setLateFees(d.lateFees);
         setNotices(d.notices);
+        setActivityLog(d.activityLog);
       }
       if (!cancelled) setLoaded(true);
     })();
@@ -256,6 +260,7 @@ export default function App() {
         setPayments(d.payments);
         setLateFees(d.lateFees);
         setNotices(d.notices);
+        setActivityLog(d.activityLog);
       }
     };
 
@@ -265,10 +270,15 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "payments" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "late_fees" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "notices" }, refetch)
+      .on("postgres_changes", { event: "*", schema: "public", table: "activity_log" }, refetch)
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
   }, [fetchAll]);
+
+  const logActivity = async (action) => {
+    await supabase.from("activity_log").insert({ action });
+  };
 
   /* ---------------- derived ---------------- */
 
@@ -305,48 +315,71 @@ export default function App() {
     const { error } = await supabase.from("members").insert({ name, shares });
     if (error) { showToast("Couldn't add member"); return; }
     showToast(`${name} added to the fund`);
+    logActivity(`Added ${name} to the fund (${shares} share${shares === 1 ? "" : "s"})`);
   };
 
   const doDeleteMember = async (id) => {
+    const member = members.find((m) => m.id === id);
     const { error } = await supabase.from("members").delete().eq("id", id);
     if (error) { showToast("Couldn't remove member"); return; }
     showToast("Member removed");
+    logActivity(`Removed ${member ? member.name : "a member"} from the fund`);
   };
 
   const doSetPayment = async (memberId, monthKey, amount) => {
+    const member = members.find((m) => m.id === memberId);
+    const monthInfo = MONTHS.find((mo) => mo.key === monthKey);
     const { error } = await supabase
       .from("payments")
       .upsert({ member_id: memberId, month_key: monthKey, amount }, { onConflict: "member_id,month_key" });
     if (error) { showToast("Couldn't save payment"); return; }
     showToast("Payment recorded");
+    const name = member ? member.name : "a member";
+    const monthLabel = monthInfo ? `${monthInfo.label} ${monthInfo.year}` : monthKey;
+    if (amount > 0) {
+      logActivity(`Recorded ${fmt(amount)} for ${name} — ${monthLabel}`);
+    } else {
+      logActivity(`Cleared ${monthLabel} payment for ${name}`);
+    }
   };
 
   const doSetLateFee = async (memberId, amount) => {
+    const member = members.find((m) => m.id === memberId);
+    const oldAmount = lateFees[memberId] || 0;
     const { error } = await supabase
       .from("late_fees")
       .upsert({ member_id: memberId, amount }, { onConflict: "member_id" });
     if (error) { showToast("Couldn't update late fee"); return; }
     showToast("Late fee updated");
+    const name = member ? member.name : "a member";
+    logActivity(`Late fee for ${name}: ${fmt(oldAmount)} → ${fmt(amount)}`);
   };
 
   const doSetShares = async (memberId, shares) => {
+    const member = members.find((m) => m.id === memberId);
+    const oldShares = member ? member.shares : null;
     const { error } = await supabase.from("members").update({ shares }).eq("id", memberId);
     if (error) { showToast("Couldn't update shares"); return; }
     showToast("Shares updated");
+    const name = member ? member.name : "a member";
+    logActivity(`Shares for ${name}: ${oldShares ?? "?"} → ${shares}`);
   };
 
   const doAddNotice = async (message, mentionedMemberId) => {
+    const mentioned = mentionedMemberId ? members.find((m) => m.id === mentionedMemberId) : null;
     const { error } = await supabase
       .from("notices")
       .insert({ message, mentioned_member_id: mentionedMemberId || null });
     if (error) { showToast("Couldn't post notice"); return; }
     showToast("Notice posted");
+    logActivity(`Posted a notice${mentioned ? ` mentioning ${mentioned.name}` : ""}`);
   };
 
   const doDeleteNotice = async (id) => {
     const { error } = await supabase.from("notices").delete().eq("id", id);
     if (error) { showToast("Couldn't remove notice"); return; }
     showToast("Notice removed");
+    logActivity("Removed a notice");
   };
 
   /* ---------------- render ---------------- */
@@ -448,6 +481,10 @@ export default function App() {
             onEditCell={(member, month) => setModal({ type: "editPayment", payload: { member, month } })}
           />
         )}
+
+        {tab === "activity" && (
+          <ActivityTab activityLog={activityLog} />
+        )}
       </div>
 
       <div style={navWrapStyle}>
@@ -455,6 +492,7 @@ export default function App() {
           <NavBtn active={tab === "overview"} onClick={() => setTab("overview")} icon={<LayoutGrid size={18} />} label="Overview" />
           <NavBtn active={tab === "members"} onClick={() => setTab("members")} icon={<Users size={18} />} label="Members" />
           <NavBtn active={tab === "payments"} onClick={() => setTab("payments")} icon={<Receipt size={18} />} label="Payments" />
+          <NavBtn active={tab === "activity"} onClick={() => setTab("activity")} icon={<History size={18} />} label="Activity" />
         </div>
       </div>
 
@@ -568,6 +606,19 @@ function timeAgo(dateStr) {
   const days = Math.floor(hrs / 24);
   if (days < 7) return `${days}d ago`;
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// Always shown in Dhaka time (GMT+6), regardless of the viewer's own device timezone —
+// keeps the log consistent for everyone reading it.
+function formatDhakaTime(dateStr) {
+  const d = new Date(dateStr);
+  const time = d.toLocaleTimeString("en-US", {
+    hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dhaka",
+  });
+  const date = d.toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric", timeZone: "Asia/Dhaka",
+  });
+  return `${time}, ${date}`;
 }
 
 function OverviewTab({
@@ -925,6 +976,44 @@ function PaymentsTab({ members, payments, isAdmin, onEditCell }) {
         <span style={{ fontSize: 13, color: "#8b93a7", fontWeight: 600 }}>Total Collected Principal (all months)</span>
         <span style={{ fontSize: 18, fontWeight: 800, color: "#34d399" }}>{fmt(grandTotal)}</span>
       </div>
+    </div>
+  );
+}
+
+function ActivityTab({ activityLog }) {
+  return (
+    <div style={{ padding: "12px 16px 0" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <History size={16} color="#5bb8ff" />
+        <span style={{ fontSize: 14, fontWeight: 700, color: "#f4f6fb" }}>Activity Log</span>
+      </div>
+
+      {activityLog.length === 0 ? (
+        <div style={{ textAlign: "center", color: "#5b6478", padding: "40px 0", fontSize: 14 }}>
+          No activity yet — admin changes will show up here.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {activityLog.map((entry) => (
+            <div
+              key={entry.id}
+              className="bff-card"
+              style={{ padding: "13px 14px", display: "flex", alignItems: "flex-start", gap: 10 }}
+            >
+              <div style={{
+                width: 28, height: 28, borderRadius: 8, background: "rgba(91,184,255,0.1)",
+                display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1,
+              }}>
+                <ShieldCheck size={13} color="#5bb8ff" />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, color: "#e2e6f0", lineHeight: 1.4 }}>{entry.action}</div>
+                <div style={{ fontSize: 11.5, color: "#5b6478", marginTop: 3 }}>{formatDhakaTime(entry.created_at)}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
