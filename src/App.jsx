@@ -710,6 +710,13 @@ function OverviewTab({
         <div style={{ fontSize: 11.5, color: "#5b6478", marginTop: 12, lineHeight: 1.4 }}>
           Operational fund — excluded from member equity calculations.
         </div>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          marginTop: 14, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.06)",
+        }}>
+          <span style={{ fontSize: 12.5, color: "#8b93a7", fontWeight: 600 }}>Net Equity Target</span>
+          <span style={{ fontSize: 15, fontWeight: 700, color: "#5bb8ff" }}>{fmt(yearlyTarget - totalMaintenanceFee)}</span>
+        </div>
       </div>
 
       <div className="bff-card" style={{ padding: "18px 10px 8px", marginBottom: 16 }}>
