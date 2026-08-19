@@ -3,7 +3,7 @@ import {
   Shield, Lock, ShieldCheck, AlertTriangle, Clock, Layers, Target,
   Wallet, Search, UserPlus, Trash2, X, Check, TrendingUp,
   LayoutGrid, Users, Receipt, Pencil, ChevronRight, Activity, KeyRound, Wrench,
-  Megaphone, AtSign, Plus, History, Bell, BellOff, Download
+  Megaphone, AtSign, Plus, History, Bell, BellOff, Download, Paperclip, Eye
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
@@ -223,6 +223,7 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [members, setMembers] = useState([]);
   const [payments, setPayments] = useState({});
+  const [receipts, setReceipts] = useState({});
   const [lateFees, setLateFees] = useState({});
   const [notices, setNotices] = useState([]);
   const [activityLog, setActivityLog] = useState([]);
@@ -258,9 +259,14 @@ export default function App() {
     setConnError(false);
 
     const paymentsObj = {};
+    const receiptsObj = {};
     (paymentsRes.data || []).forEach((row) => {
       if (!paymentsObj[row.member_id]) paymentsObj[row.member_id] = {};
       paymentsObj[row.member_id][row.month_key] = Number(row.amount);
+      if (row.receipt_path) {
+        if (!receiptsObj[row.member_id]) receiptsObj[row.member_id] = {};
+        receiptsObj[row.member_id][row.month_key] = row.receipt_path;
+      }
     });
 
     const lateFeesObj = {};
@@ -271,6 +277,7 @@ export default function App() {
     return {
       members: membersRes.data || [],
       payments: paymentsObj,
+      receipts: receiptsObj,
       lateFees: lateFeesObj,
       notices: noticesRes.data || [],
       activityLog: activityRes.data || [],
@@ -284,6 +291,7 @@ export default function App() {
       if (d && !cancelled) {
         setMembers(d.members);
         setPayments(d.payments);
+        setReceipts(d.receipts);
         setLateFees(d.lateFees);
         setNotices(d.notices);
         setActivityLog(d.activityLog);
@@ -299,6 +307,7 @@ export default function App() {
       if (d) {
         setMembers(d.members);
         setPayments(d.payments);
+        setReceipts(d.receipts);
         setLateFees(d.lateFees);
         setNotices(d.notices);
         setActivityLog(d.activityLog);
@@ -479,6 +488,69 @@ export default function App() {
     } else {
       logActivity(`Cleared ${monthLabel} payment for ${name}`);
     }
+  };
+
+  const doUploadReceipt = async (member, monthKey, file) => {
+    const monthInfo = MONTHS.find((mo) => mo.key === monthKey);
+    const monthLabel = monthInfo ? `${monthInfo.label} ${monthInfo.year}` : monthKey;
+    const ext = (file.name.split(".").pop() || "dat").toLowerCase();
+    const path = `${member.id}/${monthKey}.${ext}`;
+
+    const existingPath = receipts[member.id]?.[monthKey];
+    if (existingPath && existingPath !== path) {
+      await supabase.storage.from("receipts").remove([existingPath]);
+    }
+
+    const { error: upErr } = await supabase.storage
+      .from("receipts")
+      .upload(path, file, { upsert: true, contentType: file.type });
+    if (upErr) { showToast("Couldn't upload receipt"); return; }
+
+    const { error: dbErr } = await supabase
+      .from("payments")
+      .upsert({ member_id: member.id, month_key: monthKey, receipt_path: path }, { onConflict: "member_id,month_key" });
+    if (dbErr) { showToast("Couldn't save receipt"); return; }
+
+    showToast("Receipt uploaded");
+    logActivity(`Uploaded receipt for ${member.name} — ${monthLabel}`);
+  };
+
+  const doRemoveReceipt = async (member, monthKey) => {
+    const monthInfo = MONTHS.find((mo) => mo.key === monthKey);
+    const monthLabel = monthInfo ? `${monthInfo.label} ${monthInfo.year}` : monthKey;
+    const path = receipts[member.id]?.[monthKey];
+    if (!path) return;
+
+    await supabase.storage.from("receipts").remove([path]);
+    const { error } = await supabase
+      .from("payments")
+      .upsert({ member_id: member.id, month_key: monthKey, receipt_path: null }, { onConflict: "member_id,month_key" });
+    if (error) { showToast("Couldn't remove receipt"); return; }
+
+    showToast("Receipt removed");
+    logActivity(`Removed receipt for ${member.name} — ${monthLabel}`);
+  };
+
+  const totalReceiptCount = Object.values(receipts).reduce(
+    (sum, memberReceipts) => sum + Object.keys(memberReceipts).length,
+    0
+  );
+
+  const doDeleteAllReceipts = async () => {
+    const allPaths = Object.values(receipts).flatMap((memberReceipts) => Object.values(memberReceipts));
+    if (allPaths.length === 0) { showToast("No receipts to delete"); return; }
+
+    const { error: storageError } = await supabase.storage.from("receipts").remove(allPaths);
+    if (storageError) { showToast("Couldn't delete receipt files"); return; }
+
+    const { error: dbError } = await supabase
+      .from("payments")
+      .update({ receipt_path: null })
+      .not("receipt_path", "is", null);
+    if (dbError) { showToast("Files deleted, but couldn't clear attachments"); return; }
+
+    showToast(`Deleted ${allPaths.length} receipt${allPaths.length === 1 ? "" : "s"}`);
+    logActivity(`Deleted all receipt attachments (${allPaths.length} file${allPaths.length === 1 ? "" : "s"})`);
   };
 
   const doSetLateFee = async (memberId, amount) => {
@@ -670,11 +742,14 @@ export default function App() {
           member={selectedMember}
           stats={statsById[selectedMember.id]}
           payments={payments[selectedMember.id] || {}}
+          receipts={receipts[selectedMember.id] || {}}
           isAdmin={isAdmin}
           onClose={() => setSelectedMember(null)}
           onEditLateFee={() => setModal({ type: "editLateFee", payload: selectedMember })}
           onEditShares={() => setModal({ type: "editShares", payload: selectedMember })}
           onEditMonth={(month) => setModal({ type: "editPayment", payload: { member: selectedMember, month } })}
+          onUploadReceipt={(monthKey, file) => doUploadReceipt(selectedMember, monthKey, file)}
+          onRemoveReceipt={(monthKey) => doRemoveReceipt(selectedMember, monthKey)}
         />
       )}
 
@@ -683,6 +758,15 @@ export default function App() {
           onClose={() => setModal(null)}
           onExportMembers={() => { exportMembersCSV(); setModal(null); }}
           onExportPayments={() => { exportPaymentsCSV(); setModal(null); }}
+          receiptCount={totalReceiptCount}
+          onDeleteAllReceipts={() => setModal({ type: "confirmDeleteAllReceipts" })}
+        />
+      )}
+      {modal?.type === "confirmDeleteAllReceipts" && (
+        <ConfirmDeleteAllReceiptsModal
+          count={totalReceiptCount}
+          onClose={() => setModal(null)}
+          onConfirm={async () => { await doDeleteAllReceipts(); setModal(null); }}
         />
       )}
       {modal?.type === "adminLogin" && (
@@ -1194,7 +1278,7 @@ function ActivityTab({ activityLog }) {
   );
 }
 
-function MemberDetailModal({ member, stats, payments, isAdmin, onClose, onEditLateFee, onEditShares, onEditMonth }) {
+function MemberDetailModal({ member, stats, payments, receipts, isAdmin, onClose, onEditLateFee, onEditShares, onEditMonth, onUploadReceipt, onRemoveReceipt }) {
   return (
     <ModalShell onClose={onClose} align="bottom">
       <div style={{ padding: "22px 20px 28px" }}>
@@ -1263,25 +1347,91 @@ function MemberDetailModal({ member, stats, payments, isAdmin, onClose, onEditLa
         <div style={{ fontSize: 11.5, letterSpacing: 0.7, color: "#8b93a7", fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>
           12-Month Payment History
         </div>
+        <div style={{ fontSize: 11, color: "#5b6478", marginBottom: 10, lineHeight: 1.4 }}>
+          <Paperclip size={11} style={{ verticalAlign: "-1px", marginRight: 4 }} />
+          Tap the paperclip to {isAdmin ? "attach or view" : "view"} a bank receipt for a month.
+        </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {MONTHS.map((mo) => {
             const val = payments[mo.key] || 0;
+            const receiptPath = receipts[mo.key];
+            const receiptUrl = receiptPath
+              ? supabase.storage.from("receipts").getPublicUrl(receiptPath).data.publicUrl
+              : null;
             return (
               <div
                 key={mo.key}
-                onClick={() => isAdmin && onEditMonth(mo)}
                 style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
                   padding: "12px 14px", borderRadius: 11, background: "rgba(255,255,255,0.02)",
-                  border: "1px solid rgba(255,255,255,0.05)", cursor: isAdmin ? "pointer" : "default",
+                  border: "1px solid rgba(255,255,255,0.05)",
                 }}
               >
-                <span style={{ fontSize: 13.5, color: "#c3cadb", fontWeight: 600 }}>{mo.label} {mo.year}</span>
-                {val > 0 ? (
-                  <span style={{ fontSize: 13.5, fontWeight: 700, color: "#34d399" }}>{fmt(val)}</span>
-                ) : (
-                  <span style={{ fontSize: 13.5, fontWeight: 600, color: "#5b6478" }}>Not Paid</span>
-                )}
+                <div
+                  onClick={() => isAdmin && onEditMonth(mo)}
+                  style={{
+                    flex: 1, minWidth: 0, display: "flex", alignItems: "center", justifyContent: "space-between",
+                    cursor: isAdmin ? "pointer" : "default",
+                  }}
+                >
+                  <span style={{ fontSize: 13.5, color: "#c3cadb", fontWeight: 600 }}>{mo.label} {mo.year}</span>
+                  {val > 0 ? (
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: "#34d399" }}>{fmt(val)}</span>
+                  ) : (
+                    <span style={{ fontSize: 13.5, fontWeight: 600, color: "#5b6478" }}>Not Paid</span>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+                  {receiptUrl && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); window.open(receiptUrl, "_blank"); }}
+                      title="View receipt"
+                      style={receiptIconBtnStyle("#5bb8ff", "rgba(91,184,255,0.1)", "rgba(91,184,255,0.3)")}
+                    >
+                      <Eye size={13} />
+                    </button>
+                  )}
+                  {isAdmin && (
+                    <>
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        id={`receipt-input-${mo.key}`}
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) onUploadReceipt(mo.key, f);
+                          e.target.value = "";
+                        }}
+                      />
+                      <label
+                        htmlFor={`receipt-input-${mo.key}`}
+                        onClick={(e) => e.stopPropagation()}
+                        title={receiptUrl ? "Replace receipt" : "Attach receipt"}
+                        style={{
+                          ...receiptIconBtnStyle(
+                            receiptUrl ? "#8b93a7" : "#5bb8ff",
+                            receiptUrl ? "rgba(255,255,255,0.04)" : "rgba(91,184,255,0.08)",
+                            receiptUrl ? "rgba(255,255,255,0.08)" : "rgba(91,184,255,0.25)"
+                          ),
+                          cursor: "pointer",
+                        }}
+                      >
+                        <Paperclip size={13} />
+                      </label>
+                      {receiptUrl && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onRemoveReceipt(mo.key); }}
+                          title="Remove receipt"
+                          style={receiptIconBtnStyle("#f87171", "rgba(248,113,113,0.08)", "rgba(248,113,113,0.25)")}
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -1289,6 +1439,13 @@ function MemberDetailModal({ member, stats, payments, isAdmin, onClose, onEditLa
       </div>
     </ModalShell>
   );
+}
+
+function receiptIconBtnStyle(color, bg, border) {
+  return {
+    width: 27, height: 27, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center",
+    color, background: bg, border: `1px solid ${border}`, flexShrink: 0,
+  };
 }
 
 function SummaryRow({ icon, label, value, color }) {
@@ -1307,7 +1464,7 @@ function SummaryRow({ icon, label, value, color }) {
   );
 }
 
-function ExportModal({ onClose, onExportMembers, onExportPayments }) {
+function ExportModal({ onClose, onExportMembers, onExportPayments, receiptCount, onDeleteAllReceipts }) {
   return (
     <ModalShell onClose={onClose}>
       <div style={{ padding: 24 }}>
@@ -1341,7 +1498,7 @@ function ExportModal({ onClose, onExportMembers, onExportPayments }) {
           style={{
             width: "100%", display: "flex", alignItems: "center", gap: 12, padding: 16,
             borderRadius: 13, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
-            color: "#f4f6fb", cursor: "pointer", textAlign: "left",
+            color: "#f4f6fb", cursor: "pointer", textAlign: "left", marginBottom: 22,
           }}
         >
           <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(52,211,153,0.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -1352,6 +1509,57 @@ function ExportModal({ onClose, onExportMembers, onExportPayments }) {
             <div style={{ fontSize: 12, color: "#5b6478", marginTop: 1 }}>Full 12-month grid with totals</div>
           </div>
         </button>
+
+        <div style={{ height: 1, background: "rgba(255,255,255,0.07)", marginBottom: 18 }} />
+
+        <div style={{ fontSize: 11, letterSpacing: 0.6, color: "#8b93a7", fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>
+          Danger Zone
+        </div>
+        <button
+          onClick={onDeleteAllReceipts}
+          disabled={receiptCount === 0}
+          style={{
+            width: "100%", display: "flex", alignItems: "center", gap: 12, padding: 16,
+            borderRadius: 13, background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.25)",
+            color: receiptCount === 0 ? "#5b6478" : "#f87171", cursor: receiptCount === 0 ? "default" : "pointer",
+            textAlign: "left", opacity: receiptCount === 0 ? 0.6 : 1,
+          }}
+        >
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(248,113,113,0.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Trash2 size={16} color="#f87171" />
+          </div>
+          <div>
+            <div style={{ fontSize: 14.5, fontWeight: 700 }}>Delete All Receipts</div>
+            <div style={{ fontSize: 12, color: "#8b93a7", marginTop: 1 }}>
+              {receiptCount === 0 ? "No receipts uploaded yet" : `Permanently removes all ${receiptCount} uploaded file${receiptCount === 1 ? "" : "s"}`}
+            </div>
+          </div>
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ConfirmDeleteAllReceiptsModal({ count, onClose, onConfirm }) {
+  return (
+    <ModalShell onClose={onClose}>
+      <div style={{ padding: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: "rgba(248,113,113,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Trash2 size={18} color="#f87171" />
+          </div>
+          <span style={{ fontSize: 17, fontWeight: 800, color: "#f4f6fb" }}>Delete All Receipts?</span>
+        </div>
+        <div style={{ fontSize: 14, color: "#8b93a7", marginBottom: 22, lineHeight: 1.5 }}>
+          This will permanently delete all <strong style={{ color: "#f4f6fb" }}>{count}</strong> uploaded receipt
+          file{count === 1 ? "" : "s"} and clear the attachment from every payment record. Payment amounts
+          themselves are <strong style={{ color: "#f4f6fb" }}>not affected</strong> — only the receipt files.
+          This can't be undone.
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onClose} className="bff-secondarybtn">Cancel</button>
+          <button onClick={onConfirm} className="bff-dangerbtn">Delete All</button>
+        </div>
       </div>
     </ModalShell>
   );
