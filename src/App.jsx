@@ -3,7 +3,7 @@ import {
   Shield, Lock, ShieldCheck, AlertTriangle, Clock, Layers, Target,
   Wallet, Search, UserPlus, Trash2, X, Check, TrendingUp,
   LayoutGrid, Users, Receipt, Pencil, ChevronRight, Activity, KeyRound, Wrench,
-  Megaphone, AtSign, Plus, History
+  Megaphone, AtSign, Plus, History, Bell, BellOff, Download
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
@@ -15,6 +15,7 @@ import { supabase } from "./supabaseClient";
 /* ------------------------------------------------------------------ */
 
 const ADMIN_PIN = import.meta.env.VITE_ADMIN_PIN || "27198";
+const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY || "";
 const TOTAL_SHARES_FALLBACK = 32;
 const BASE_RATE = 5000;
 const SEP_MAINTENANCE = 50;
@@ -82,6 +83,45 @@ function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShar
 
 function initials(name) {
   return (name || "?").trim().charAt(0).toUpperCase();
+}
+
+// Web Push requires the VAPID key as a Uint8Array, but it's issued as a base64url string.
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+/* ---------------- CSV export helpers ---------------- */
+
+function csvEscape(val) {
+  const s = String(val ?? "");
+  if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function rowsToCSV(rows) {
+  return rows.map((r) => r.map(csvEscape).join(",")).join("\r\n");
+}
+
+function downloadCSV(filename, rows) {
+  const csv = "\uFEFF" + rowsToCSV(rows); // BOM so ৳ and non-ASCII names open correctly in Excel
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function todayStamp() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 /* ------------------------------------------------------------------ */
@@ -193,6 +233,7 @@ export default function App() {
   const [selectedMember, setSelectedMember] = useState(null);
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState(null);
+  const [pushStatus, setPushStatus] = useState("checking"); // checking | unsupported | off | on | denied
 
   const showToast = (msg) => {
     setToast(msg);
@@ -280,6 +321,68 @@ export default function App() {
     await supabase.from("activity_log").insert({ action });
   };
 
+  /* ---------------- push notifications ---------------- */
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !VAPID_PUBLIC_KEY) {
+      setPushStatus("unsupported");
+      return;
+    }
+    if (Notification.permission === "denied") {
+      setPushStatus("denied");
+      return;
+    }
+    navigator.serviceWorker.ready
+      .then((reg) => reg.pushManager.getSubscription())
+      .then((sub) => setPushStatus(sub ? "on" : "off"))
+      .catch(() => setPushStatus("off"));
+  }, []);
+
+  const enablePush = async () => {
+    if (pushStatus === "unsupported") {
+      showToast("Notifications aren't supported on this device/browser");
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setPushStatus(permission === "denied" ? "denied" : "off");
+        showToast("Notification permission wasn't granted");
+        return;
+      }
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+      const json = sub.toJSON();
+      const { error } = await supabase.from("push_subscriptions").upsert(
+        { endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth },
+        { onConflict: "endpoint" }
+      );
+      if (error) { showToast("Couldn't save subscription"); return; }
+      setPushStatus("on");
+      showToast("Notifications enabled");
+    } catch (e) {
+      showToast("Couldn't enable notifications");
+    }
+  };
+
+  const disablePush = async () => {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await supabase.from("push_subscriptions").delete().eq("endpoint", sub.endpoint);
+        await sub.unsubscribe();
+      }
+      setPushStatus("off");
+      showToast("Notifications turned off");
+    } catch (e) {
+      showToast("Couldn't turn off notifications");
+    }
+  };
+
   /* ---------------- derived ---------------- */
 
   const totalShares = members.reduce((s, m) => s + m.shares, 0) || TOTAL_SHARES_FALLBACK;
@@ -308,6 +411,41 @@ export default function App() {
     const total = members.reduce((s, m) => s + (payments[m.id]?.[mo.key] || 0), 0);
     return { name: mo.label, value: total };
   });
+
+  const exportMembersCSV = () => {
+    const header = [
+      "Name", "Shares", "Ownership %", "Total Received", "Expected Due", "Pending Due",
+      "Late Fee", "Maintenance Owed", "Maintenance Collected", "Equity", "Status",
+    ];
+    const rows = [header, ...members.map((m) => {
+      const st = statsById[m.id];
+      return [
+        m.name, m.shares, st.ownership.toFixed(1),
+        Math.round(st.paidPrincipal), Math.round(st.expectedDue), Math.round(st.pendingDue),
+        Math.round(st.lateFee), Math.round(st.maintenanceFeeOwed), Math.round(st.maintenanceFeeCollected),
+        Math.round(st.equity), st.status,
+      ];
+    })];
+    downloadCSV(`bff-members-${todayStamp()}.csv`, rows);
+    logActivity("Exported members summary (CSV)");
+  };
+
+  const exportPaymentsCSV = () => {
+    const header = ["Member", "Shares", ...MONTHS.map((mo) => `${mo.label} ${mo.year}`), "Total"];
+    const rows = [header];
+    members.forEach((m) => {
+      const monthVals = MONTHS.map((mo) => payments[m.id]?.[mo.key] || 0);
+      const total = monthVals.reduce((s, v) => s + v, 0);
+      rows.push([m.name, m.shares, ...monthVals.map((v) => Math.round(v)), Math.round(total)]);
+    });
+    const monthTotals = MONTHS.map((mo) =>
+      Math.round(members.reduce((s, m) => s + (payments[m.id]?.[mo.key] || 0), 0))
+    );
+    const grandTotal = monthTotals.reduce((s, v) => s + v, 0);
+    rows.push(["TOTAL", "", ...monthTotals, grandTotal]);
+    downloadCSV(`bff-payments-${todayStamp()}.csv`, rows);
+    logActivity("Exported payments tracker (CSV)");
+  };
 
   /* ---------------- admin actions (write straight to Supabase) ---------------- */
 
@@ -419,18 +557,49 @@ export default function App() {
               <div style={{ fontSize: 12.5, color: "#5b6478", marginTop: 1 }}>Sep 2026 — Aug 2027 Cycle</div>
             </div>
           </div>
-          <button
-            onClick={() => (isAdmin ? setIsAdmin(false) : setModal({ type: "adminLogin" }))}
-            className="bff-pillbtn"
-            style={
-              isAdmin
-                ? { background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.35)", color: "#34d399" }
-                : { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#9aa3b8" }
-            }
-          >
-            {isAdmin ? <ShieldCheck size={15} /> : <Lock size={15} />}
-            {isAdmin ? "Admin" : "Member"}
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {isAdmin && (
+              <button
+                onClick={() => setModal({ type: "export" })}
+                title="Export data"
+                style={{
+                  width: 40, height: 40, borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center",
+                  background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
+                  cursor: "pointer", flexShrink: 0,
+                }}
+              >
+                <Download size={16} color="#9aa3b8" />
+              </button>
+            )}
+            {pushStatus !== "unsupported" && (
+              <button
+                onClick={pushStatus === "on" ? disablePush : enablePush}
+                title={pushStatus === "on" ? "Notifications on — tap to turn off" : "Turn on notifications"}
+                style={{
+                  width: 40, height: 40, borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center",
+                  background: pushStatus === "on" ? "rgba(52,211,153,0.1)" : "rgba(255,255,255,0.05)",
+                  border: pushStatus === "on" ? "1px solid rgba(52,211,153,0.35)" : "1px solid rgba(255,255,255,0.1)",
+                  cursor: "pointer", flexShrink: 0,
+                }}
+              >
+                {pushStatus === "on"
+                  ? <Bell size={16} color="#34d399" />
+                  : <BellOff size={16} color="#9aa3b8" />}
+              </button>
+            )}
+            <button
+              onClick={() => (isAdmin ? setIsAdmin(false) : setModal({ type: "adminLogin" }))}
+              className="bff-pillbtn"
+              style={
+                isAdmin
+                  ? { background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.35)", color: "#34d399" }
+                  : { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#9aa3b8" }
+              }
+            >
+              {isAdmin ? <ShieldCheck size={15} /> : <Lock size={15} />}
+              {isAdmin ? "Admin" : "Member"}
+            </button>
+          </div>
         </div>
 
         {connError && (
@@ -509,6 +678,13 @@ export default function App() {
         />
       )}
 
+      {modal?.type === "export" && (
+        <ExportModal
+          onClose={() => setModal(null)}
+          onExportMembers={() => { exportMembersCSV(); setModal(null); }}
+          onExportPayments={() => { exportPaymentsCSV(); setModal(null); }}
+        />
+      )}
       {modal?.type === "adminLogin" && (
         <AdminLoginModal
           onClose={() => setModal(null)}
@@ -1128,6 +1304,56 @@ function SummaryRow({ icon, label, value, color }) {
       </div>
       <span style={{ fontSize: 15.5, fontWeight: 700, color }}>{value}</span>
     </div>
+  );
+}
+
+function ExportModal({ onClose, onExportMembers, onExportPayments }) {
+  return (
+    <ModalShell onClose={onClose}>
+      <div style={{ padding: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <span style={{ fontSize: 17, fontWeight: 800, color: "#f4f6fb" }}>Export Data</span>
+          <button onClick={onClose} style={closeBtnStyle}><X size={18} color="#8b93a7" /></button>
+        </div>
+        <div style={{ fontSize: 13, color: "#8b93a7", marginBottom: 20, lineHeight: 1.5 }}>
+          Downloads a CSV file you can open in Excel, Google Sheets, or Numbers.
+        </div>
+
+        <button
+          onClick={onExportMembers}
+          style={{
+            width: "100%", display: "flex", alignItems: "center", gap: 12, padding: 16,
+            borderRadius: 13, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
+            color: "#f4f6fb", cursor: "pointer", marginBottom: 10, textAlign: "left",
+          }}
+        >
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(91,184,255,0.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Users size={16} color="#5bb8ff" />
+          </div>
+          <div>
+            <div style={{ fontSize: 14.5, fontWeight: 700 }}>Members Summary</div>
+            <div style={{ fontSize: 12, color: "#5b6478", marginTop: 1 }}>Shares, dues, late fees, equity — one row per member</div>
+          </div>
+        </button>
+
+        <button
+          onClick={onExportPayments}
+          style={{
+            width: "100%", display: "flex", alignItems: "center", gap: 12, padding: 16,
+            borderRadius: 13, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
+            color: "#f4f6fb", cursor: "pointer", textAlign: "left",
+          }}
+        >
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(52,211,153,0.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Receipt size={16} color="#34d399" />
+          </div>
+          <div>
+            <div style={{ fontSize: 14.5, fontWeight: 700 }}>Payments Tracker</div>
+            <div style={{ fontSize: 12, color: "#5b6478", marginTop: 1 }}>Full 12-month grid with totals</div>
+          </div>
+        </button>
+      </div>
+    </ModalShell>
   );
 }
 
