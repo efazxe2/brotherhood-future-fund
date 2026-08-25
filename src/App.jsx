@@ -3,12 +3,15 @@ import {
   Shield, Lock, ShieldCheck, AlertTriangle, Clock, Layers, Target,
   Wallet, Search, UserPlus, Trash2, X, Check, TrendingUp,
   LayoutGrid, Users, Receipt, Pencil, ChevronRight, Activity, KeyRound, Wrench,
-  Megaphone, AtSign, Plus, History, Bell, BellOff, Download, Paperclip, Eye
+  Megaphone, AtSign, Plus, History, Bell, BellOff, Download, Paperclip, Eye,
+  Calculator, PieChart as PieChartIcon, Coins, TrendingDown, FileText, Settings2, Landmark
 } from "lucide-react";
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
+  AreaChart, Area, LineChart, Line, PieChart, Pie, Cell, Legend, ReferenceLine,
+  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from "recharts";
 import { supabase } from "./supabaseClient";
+import jsPDF from "jspdf";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                            */
@@ -124,6 +127,151 @@ function todayStamp() {
   return new Date().toISOString().slice(0, 10);
 }
 
+/* ---------------- PDF statement ---------------- */
+
+function generateMemberStatementPDF(member, stats, payments) {
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 48;
+  let y = 60;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.setTextColor(20, 24, 34);
+  doc.text("Brotherhood Future Fund", margin, y);
+  y += 20;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(100, 105, 120);
+  doc.text("Sep 2026 — Aug 2027 Cycle · Member Statement", margin, y);
+  y += 30;
+
+  doc.setDrawColor(220, 220, 225);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 24;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(15);
+  doc.setTextColor(20, 24, 34);
+  doc.text(member.name, margin, y);
+  y += 18;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10.5);
+  doc.setTextColor(100, 105, 120);
+  doc.text(`${member.shares} shares · ${stats.ownership.toFixed(1)}% ownership`, margin, y);
+  y += 12;
+  doc.text(`Generated ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`, margin, y);
+  y += 30;
+
+  const summaryRows = [
+    ["Expected Due", fmt(stats.expectedDue)],
+    ["Total Received", fmt(stats.paidPrincipal)],
+    ["Pending Due", fmt(stats.pendingDue)],
+    ["Late Fees", fmt(stats.lateFee)],
+    ["Maintenance Fee (excl. from equity)", fmt(stats.maintenanceFeeCollected)],
+    ["Current Equity", fmtSigned(stats.equity)],
+  ];
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.setTextColor(20, 24, 34);
+  doc.text("Equity & Payment Summary", margin, y);
+  y += 16;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10.5);
+  summaryRows.forEach(([label, value]) => {
+    doc.setTextColor(90, 95, 110);
+    doc.text(label, margin, y);
+    doc.setTextColor(20, 24, 34);
+    doc.text(value, pageWidth - margin, y, { align: "right" });
+    y += 18;
+  });
+
+  y += 12;
+  doc.setDrawColor(220, 220, 225);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 24;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.setTextColor(20, 24, 34);
+  doc.text("12-Month Payment History", margin, y);
+  y += 18;
+
+  doc.setFontSize(10);
+  MONTHS.forEach((mo) => {
+    const val = payments[mo.key] || 0;
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(90, 95, 110);
+    doc.text(`${mo.label} ${mo.year}`, margin, y);
+    doc.setFont("helvetica", val > 0 ? "normal" : "italic");
+    doc.setTextColor(val > 0 ? 20 : 150, val > 0 ? 24 : 150, val > 0 ? 34 : 155);
+    doc.text(val > 0 ? fmt(val) : "Not Paid", pageWidth - margin, y, { align: "right" });
+    y += 17;
+  });
+
+  y += 20;
+  doc.setFont("helvetica", "italic");
+  doc.setFontSize(8.5);
+  doc.setTextColor(140, 145, 155);
+  doc.text("Generated from the Brotherhood Future Fund live tracker. For record-keeping purposes.", margin, y);
+
+  doc.save(`${member.name.replace(/\s+/g, "-")}-statement-${todayStamp()}.pdf`);
+}
+
+/* ---------------- Wealth Lab helpers ---------------- */
+
+const GRAMS_PER_BHORI = 11.664;
+const PURITY_OPTIONS = [
+  { key: "rate_22k", label: "22K" },
+  { key: "rate_21k", label: "21K" },
+  { key: "rate_18k", label: "18K" },
+  { key: "rate_traditional", label: "Traditional" },
+];
+
+// Bangladeshi lakh-style comma grouping (e.g. ৳10,00,000), used only within
+// Wealth Lab per the large round figures discussed there — the rest of the
+// app keeps its existing international comma format (৳1,000,000).
+function fmtLakh(n) {
+  const num = Math.round(n || 0);
+  const isNeg = num < 0;
+  const s = Math.abs(num).toString();
+  let result;
+  if (s.length <= 3) {
+    result = s;
+  } else {
+    const last3 = s.slice(-3);
+    const rest = s.slice(0, -3);
+    const grouped = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ",");
+    result = grouped + "," + last3;
+  }
+  return (isNeg ? "-" : "") + "\u09F3" + result;
+}
+
+function gramsToDisplay(grams, unit) {
+  if (unit === "bhori") return (grams / GRAMS_PER_BHORI).toFixed(2) + " bhori";
+  return grams.toFixed(2) + " g";
+}
+
+// Finds the most recent gold_rates entry on or before the given date for a purity.
+// Rates must be sorted ascending by rate_date before calling this.
+function findRateOnOrBefore(sortedRates, dateStr, purityKey) {
+  let found = null;
+  for (const r of sortedRates) {
+    if (r.rate_date <= dateStr && r[purityKey] != null) found = r;
+    if (r.rate_date > dateStr) break;
+  }
+  return found;
+}
+
+function findLatestRate(sortedRates, purityKey) {
+  for (let i = sortedRates.length - 1; i >= 0; i--) {
+    if (sortedRates[i][purityKey] != null) return sortedRates[i];
+  }
+  return null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Small UI atoms                                                       */
 /* ------------------------------------------------------------------ */
@@ -227,6 +375,7 @@ export default function App() {
   const [lateFees, setLateFees] = useState({});
   const [notices, setNotices] = useState([]);
   const [activityLog, setActivityLog] = useState([]);
+  const [goldRates, setGoldRates] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [connError, setConnError] = useState(false);
 
@@ -244,15 +393,16 @@ export default function App() {
   /* ---------------- Supabase: fetch + realtime ---------------- */
 
   const fetchAll = useCallback(async () => {
-    const [membersRes, paymentsRes, lateFeesRes, noticesRes, activityRes] = await Promise.all([
+    const [membersRes, paymentsRes, lateFeesRes, noticesRes, activityRes, goldRatesRes] = await Promise.all([
       supabase.from("members").select("*").order("id"),
       supabase.from("payments").select("*"),
       supabase.from("late_fees").select("*"),
       supabase.from("notices").select("*").order("created_at", { ascending: false }),
       supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(200),
+      supabase.from("gold_rates").select("*").order("rate_date", { ascending: true }),
     ]);
 
-    if (membersRes.error || paymentsRes.error || lateFeesRes.error || noticesRes.error || activityRes.error) {
+    if (membersRes.error || paymentsRes.error || lateFeesRes.error || noticesRes.error || activityRes.error || goldRatesRes.error) {
       setConnError(true);
       return null;
     }
@@ -281,6 +431,7 @@ export default function App() {
       lateFees: lateFeesObj,
       notices: noticesRes.data || [],
       activityLog: activityRes.data || [],
+      goldRates: goldRatesRes.data || [],
     };
   }, []);
 
@@ -295,6 +446,7 @@ export default function App() {
         setLateFees(d.lateFees);
         setNotices(d.notices);
         setActivityLog(d.activityLog);
+        setGoldRates(d.goldRates);
       }
       if (!cancelled) setLoaded(true);
     })();
@@ -311,6 +463,7 @@ export default function App() {
         setLateFees(d.lateFees);
         setNotices(d.notices);
         setActivityLog(d.activityLog);
+        setGoldRates(d.goldRates);
       }
     };
 
@@ -321,6 +474,7 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "late_fees" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "notices" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "activity_log" }, refetch)
+      .on("postgres_changes", { event: "*", schema: "public", table: "gold_rates" }, refetch)
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
@@ -553,6 +707,15 @@ export default function App() {
     logActivity(`Deleted all receipt attachments (${allPaths.length} file${allPaths.length === 1 ? "" : "s"})`);
   };
 
+  const doSaveGoldRate = async (dateStr, rateValues) => {
+    const { error } = await supabase
+      .from("gold_rates")
+      .upsert({ rate_date: dateStr, ...rateValues }, { onConflict: "rate_date" });
+    if (error) { showToast("Couldn't save gold rate"); return; }
+    showToast("Gold rate saved");
+    logActivity(`Logged gold rate for ${dateStr}`);
+  };
+
   const doSetLateFee = async (memberId, amount) => {
     const member = members.find((m) => m.id === memberId);
     const oldAmount = lateFees[memberId] || 0;
@@ -726,6 +889,20 @@ export default function App() {
         {tab === "activity" && (
           <ActivityTab activityLog={activityLog} />
         )}
+
+        {tab === "wealthlab" && (
+          <WealthLabTab
+            members={members}
+            statsById={statsById}
+            collectedPrincipal={collectedPrincipal}
+            totalPendingDues={totalPendingDues}
+            totalShares={totalShares}
+            monthlyTotals={monthlyTotals}
+            goldRates={goldRates}
+            isAdmin={isAdmin}
+            onSaveGoldRate={doSaveGoldRate}
+          />
+        )}
       </div>
 
       <div style={navWrapStyle}>
@@ -733,6 +910,7 @@ export default function App() {
           <NavBtn active={tab === "overview"} onClick={() => setTab("overview")} icon={<LayoutGrid size={18} />} label="Overview" />
           <NavBtn active={tab === "members"} onClick={() => setTab("members")} icon={<Users size={18} />} label="Members" />
           <NavBtn active={tab === "payments"} onClick={() => setTab("payments")} icon={<Receipt size={18} />} label="Payments" />
+          <NavBtn active={tab === "wealthlab"} onClick={() => setTab("wealthlab")} icon={<Coins size={18} />} label="Wealth" />
           <NavBtn active={tab === "activity"} onClick={() => setTab("activity")} icon={<History size={18} />} label="Activity" />
         </div>
       </div>
@@ -1061,6 +1239,683 @@ function OverviewTab({
   );
 }
 
+function CumulativeGrowthChart({ monthlyTotals, totalShares }) {
+  let running = 0;
+  const data = MONTHS.map((mo, i) => {
+    running += monthlyTotals[i]?.value || 0;
+    return {
+      name: mo.label,
+      Actual: running,
+      Target: totalShares * ratesSumUpTo(i + 1),
+    };
+  });
+
+  return (
+    <div className="bff-card" style={{ padding: "18px 10px 8px", marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px", marginBottom: 6 }}>
+        <TrendingUp size={15} color="#5bb8ff" />
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Cumulative Growth</span>
+      </div>
+      <div style={{ padding: "0 10px", marginBottom: 4, fontSize: 11.5, color: "#5b6478" }}>
+        What's actually been collected vs. what full on-time payment would look like.
+      </div>
+      <div style={{ height: 190 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+            <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+            <XAxis dataKey="name" tick={{ fill: "#5b6478", fontSize: 10 }} axisLine={false} tickLine={false} />
+            <YAxis hide />
+            <Tooltip
+              formatter={(v, name) => [fmt(v), name]}
+              contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 12 }}
+              labelStyle={{ color: "#8b93a7" }}
+            />
+            <Legend wrapperStyle={{ fontSize: 11.5, color: "#8b93a7" }} iconType="plainline" iconSize={14} />
+            <ReferenceLine x={MONTHS[5].label} stroke="rgba(245,185,66,0.5)" strokeDasharray="3 3"
+              label={{ value: "6-Mo", position: "top", fill: "#f5b942", fontSize: 10 }} />
+            <ReferenceLine x={MONTHS[11].label} stroke="rgba(52,211,153,0.5)" strokeDasharray="3 3"
+              label={{ value: "Year-End", position: "top", fill: "#34d399", fontSize: 10 }} />
+            <Line type="monotone" dataKey="Actual" stroke="#5bb8ff" strokeWidth={2.5} dot={false} />
+            <Line type="monotone" dataKey="Target" stroke="#5b6478" strokeWidth={1.5} strokeDasharray="5 5" dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function FundAllocationChart({ collectedPrincipal, totalPendingDues }) {
+  const total = collectedPrincipal + totalPendingDues;
+  const data = [
+    { name: "Collected", value: collectedPrincipal, color: "#34d399" },
+    { name: "Pending", value: totalPendingDues, color: "#f5b942" },
+  ];
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <PieChartIcon size={15} color="#5bb8ff" />
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Fund Allocation</span>
+      </div>
+      {total === 0 ? (
+        <div style={{ fontSize: 13, color: "#5b6478", padding: "6px 2px" }}>No dues recorded yet.</div>
+      ) : (
+        <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+          <div style={{ width: 130, height: 130, flexShrink: 0 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={data} dataKey="value" nameKey="name" innerRadius={38} outerRadius={62} paddingAngle={3} stroke="none">
+                  {data.map((d, i) => <Cell key={i} fill={d.color} />)}
+                </Pie>
+                <Tooltip
+                  formatter={(v, name) => [fmt(v), name]}
+                  contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 12 }}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10 }}>
+            {data.map((d) => (
+              <div key={d.name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: d.color, display: "inline-block" }} />
+                  <span style={{ fontSize: 12.5, color: "#c3cadb" }}>{d.name}</span>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#f4f6fb" }}>{fmt(d.value)}</div>
+                  <div style={{ fontSize: 11, color: "#5b6478" }}>{total > 0 ? ((d.value / total) * 100).toFixed(1) : "0.0"}%</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectionsCalculator({ totalShares }) {
+  const [sharesInput, setSharesInput] = useState("");
+  const [yearsInput, setYearsInput] = useState("1");
+
+  const shares = parseFloat(sharesInput) || 0;
+  const years = parseFloat(yearsInput) || 0;
+  const totalContribution = shares * years * (12 * BASE_RATE + SEP_MAINTENANCE);
+  const maintenancePortion = shares * years * SEP_MAINTENANCE;
+  const projectedEquity = totalContribution - maintenancePortion;
+  const ownership = totalShares > 0 ? (shares / totalShares) * 100 : 0;
+  const hasInput = shares > 0 && years > 0;
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+        <Calculator size={15} color="#5bb8ff" />
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Projections Calculator</span>
+      </div>
+      <div style={{ fontSize: 11.5, color: "#5b6478", marginBottom: 16, lineHeight: 1.4 }}>
+        A savings projection, not investment growth — this fund pays back what's contributed, plus any
+        share of the penalty pool (which can't be predicted in advance).
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
+        <div>
+          <label style={labelStyle}>Shares</label>
+          <input
+            type="number" min="0" placeholder="e.g. 2" value={sharesInput}
+            onChange={(e) => setSharesInput(e.target.value)}
+            style={inputStyle}
+          />
+        </div>
+        <div>
+          <label style={labelStyle}>Years</label>
+          <input
+            type="number" min="0" step="1" value={yearsInput}
+            onChange={(e) => setYearsInput(e.target.value)}
+            style={inputStyle}
+          />
+        </div>
+      </div>
+
+      {hasInput ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <ProjectionRow label="Total Contribution Required" value={fmt(totalContribution)} />
+          <ProjectionRow label="Projected Equity (excl. penalty pool)" value={fmt(projectedEquity)} highlight />
+          <ProjectionRow label="Ownership Share" value={`${ownership.toFixed(1)}%`} />
+        </div>
+      ) : (
+        <div style={{ fontSize: 12.5, color: "#5b6478", textAlign: "center", padding: "10px 0" }}>
+          Enter shares and years to see a projection.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectionRow({ label, value, highlight }) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      padding: "12px 14px", borderRadius: 11,
+      background: highlight ? "rgba(91,184,255,0.06)" : "rgba(255,255,255,0.02)",
+      border: highlight ? "1px solid rgba(91,184,255,0.25)" : "1px solid rgba(255,255,255,0.05)",
+    }}>
+      <span style={{ fontSize: 13, color: "#8b93a7", fontWeight: 500 }}>{label}</span>
+      <span style={{ fontSize: 15, fontWeight: 700, color: highlight ? "#5bb8ff" : "#f4f6fb" }}>{value}</span>
+    </div>
+  );
+}
+
+/* ==================================================================== */
+/* WEALTH LAB                                                            */
+/* ==================================================================== */
+
+function WealthLabTab({
+  members, statsById, collectedPrincipal, totalPendingDues, totalShares,
+  monthlyTotals, goldRates, isAdmin, onSaveGoldRate,
+}) {
+  const [assumedRate, setAssumedRate] = useState("10");
+  const latest22k = findLatestRate(goldRates, "rate_22k");
+  const currentRatePerGram = latest22k ? Number(latest22k.rate_22k) : null;
+
+  return (
+    <div style={{ padding: "12px 16px 0" }}>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 18, fontWeight: 800, color: "#f4f6fb", marginBottom: 3 }}>Wealth Lab</div>
+        <div style={{ fontSize: 12.5, color: "#5b6478", lineHeight: 1.4 }}>
+          Planning and projection tools. Everything below is exploratory — it doesn't change any
+          real balances in the fund.
+        </div>
+      </div>
+
+      {isAdmin && (
+        <GoldRateAdminPanel currentRate={currentRatePerGram} lastUpdated={latest22k?.rate_date} onSave={onSaveGoldRate} />
+      )}
+
+      <GoldProjectionSimulator currentRatePerGram={currentRatePerGram} />
+
+      <CumulativeGrowthChart monthlyTotals={monthlyTotals} totalShares={totalShares} />
+
+      <FundAllocationChart collectedPrincipal={collectedPrincipal} totalPendingDues={totalPendingDues} />
+
+      <InvestmentAllocationSimulator
+        collectedPrincipal={collectedPrincipal}
+        assumedRate={assumedRate}
+        setAssumedRate={setAssumedRate}
+      />
+
+      <PersonalProfitCalculator
+        members={members}
+        statsById={statsById}
+        currentRatePerGram={currentRatePerGram}
+        assumedRate={assumedRate}
+      />
+
+      <CommercialStoreRentSimulator members={members} totalShares={totalShares} />
+
+      <ProjectionsCalculator totalShares={totalShares} />
+
+      <MonthComparisonStat monthlyTotals={monthlyTotals} />
+    </div>
+  );
+}
+
+function WealthSectionHeader({ icon, title, subtitle }) {
+  return (
+    <div style={{ marginBottom: subtitle ? 4 : 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: subtitle ? 4 : 0 }}>
+        {icon}
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>{title}</span>
+      </div>
+      {subtitle && <div style={{ fontSize: 11.5, color: "#5b6478", marginBottom: 12, lineHeight: 1.4 }}>{subtitle}</div>}
+    </div>
+  );
+}
+
+/* ---------------- 1. Admin gold rate baseline ---------------- */
+
+function GoldRateAdminPanel({ currentRate, lastUpdated, onSave }) {
+  const [unit, setUnit] = useState("gram");
+  const [value, setValue] = useState("");
+
+  const submit = () => {
+    const v = parseFloat(value);
+    if (!v || v <= 0) return;
+    const perGram = unit === "bhori" ? v / GRAMS_PER_BHORI : v;
+    onSave(todayStamp(), { rate_22k: Math.round(perGram * 100) / 100 });
+    setValue("");
+  };
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 16, border: "1px solid rgba(234,179,8,0.25)" }}>
+      <WealthSectionHeader icon={<Settings2 size={15} color="#eab308" />} title="Admin: Set 22K Gold Rate" />
+      <div style={{ fontSize: 11.5, color: "#5b6478", marginBottom: 14, lineHeight: 1.4 }}>
+        Manually entered — there's no reliable live feed for local Bangladesh gold rates, so log
+        today's rate here whenever it changes.
+      </div>
+
+      {currentRate != null && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "10px 14px", borderRadius: 10, background: "rgba(234,179,8,0.06)",
+          border: "1px solid rgba(234,179,8,0.2)", marginBottom: 14,
+        }}>
+          <span style={{ fontSize: 12, color: "#8b93a7" }}>Current rate ({lastUpdated})</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "#eab308" }}>
+            {fmt(currentRate)}/g · {fmt(currentRate * GRAMS_PER_BHORI)}/bhori
+          </span>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          type="number" min="0" placeholder={unit === "bhori" ? "BDT per bhori" : "BDT per gram"}
+          value={value} onChange={(e) => setValue(e.target.value)}
+          style={{ ...inputStyle, flex: 1 }}
+        />
+        <div style={{ display: "flex", borderRadius: 11, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" }}>
+          {["gram", "bhori"].map((u) => (
+            <button
+              key={u}
+              onClick={() => setUnit(u)}
+              style={{
+                padding: "0 14px", border: "none", cursor: "pointer", fontSize: 12.5, fontWeight: 700,
+                background: unit === u ? "rgba(91,184,255,0.15)" : "transparent",
+                color: unit === u ? "#5bb8ff" : "#8b93a7",
+              }}
+            >
+              {u === "gram" ? "g" : "bhori"}
+            </button>
+          ))}
+        </div>
+      </div>
+      <button onClick={submit} className="bff-primarybtn" style={{ marginTop: 12 }}>Save Today's Rate</button>
+    </div>
+  );
+}
+
+/* ---------------- 2. Gold Projection Simulator ---------------- */
+
+const HOLDING_PRESETS = [6, 12, 18, 24, 30, 36];
+const SCENARIOS = [
+  { key: "conservative", label: "Conservative", rate: 0.05, color: "#5bb8ff" },
+  { key: "average", label: "Historical Average", rate: 0.10, color: "#34d399" },
+  { key: "high", label: "High Growth", rate: 0.15, color: "#eab308" },
+];
+
+function GoldProjectionSimulator({ currentRatePerGram }) {
+  const [amountInput, setAmountInput] = useState("");
+  const [months, setMonths] = useState(12);
+  const [customMonths, setCustomMonths] = useState("");
+  const [unit, setUnit] = useState("gram");
+
+  const amount = parseFloat(amountInput) || 0;
+  const effectiveMonths = customMonths ? parseFloat(customMonths) || 0 : months;
+  const hasRate = currentRatePerGram != null && currentRatePerGram > 0;
+  const weightGrams = hasRate && amount > 0 ? amount / currentRatePerGram : 0;
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
+      <WealthSectionHeader
+        icon={<Coins size={15} color="#eab308" />}
+        title="Gold Projection Simulator"
+        subtitle="A what-if planning tool, not a guarantee — actual gold prices can rise or fall."
+      />
+
+      {!hasRate ? (
+        <div style={{ fontSize: 12.5, color: "#5b6478", padding: "10px 0", textAlign: "center" }}>
+          Waiting for admin to log today's gold rate.
+        </div>
+      ) : (
+        <>
+          <label style={labelStyle}>Investment Amount (৳)</label>
+          <input
+            type="number" min="0" placeholder="e.g. 100000" value={amountInput}
+            onChange={(e) => setAmountInput(e.target.value)}
+            style={{ ...inputStyle, marginBottom: 14 }}
+          />
+
+          <label style={labelStyle}>Holding Period</label>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+            {HOLDING_PRESETS.map((m) => (
+              <button
+                key={m}
+                onClick={() => { setMonths(m); setCustomMonths(""); }}
+                style={{
+                  padding: "7px 13px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+                  background: !customMonths && months === m ? "rgba(91,184,255,0.15)" : "rgba(255,255,255,0.03)",
+                  border: !customMonths && months === m ? "1px solid rgba(91,184,255,0.4)" : "1px solid rgba(255,255,255,0.08)",
+                  color: !customMonths && months === m ? "#5bb8ff" : "#9aa3b8",
+                }}
+              >
+                {m}mo
+              </button>
+            ))}
+          </div>
+          <input
+            type="number" min="1" placeholder="or type a custom number of months"
+            value={customMonths} onChange={(e) => setCustomMonths(e.target.value)}
+            style={{ ...inputStyle, marginBottom: 16, fontSize: 13 }}
+          />
+
+          {amount > 0 && (
+            <>
+              <div style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "12px 14px", borderRadius: 11, background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.06)", marginBottom: 14,
+              }}>
+                <span style={{ fontSize: 12.5, color: "#8b93a7" }}>Gold purchased today</span>
+                <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "#f4f6fb" }}>{weightGrams.toFixed(2)}g</span>
+                  <span style={{ fontSize: 12, color: "#5b6478" }}>({(weightGrams / GRAMS_PER_BHORI).toFixed(2)} bhori)</span>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {SCENARIOS.map((sc) => {
+                  const years = effectiveMonths / 12;
+                  const futurePrice = currentRatePerGram * Math.pow(1 + sc.rate, years);
+                  const futureValue = weightGrams * futurePrice;
+                  const profit = futureValue - amount;
+                  const roi = amount > 0 ? (profit / amount) * 100 : 0;
+                  return (
+                    <div key={sc.key} style={{
+                      padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.02)",
+                      border: `1px solid ${sc.color}33`,
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 700, color: sc.color }}>{sc.label}</span>
+                        <span style={{ fontSize: 11, color: "#5b6478" }}>+{(sc.rate * 100).toFixed(0)}%/yr</span>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        <MiniStatRow label="Projected gold price/g" value={fmt(futurePrice)} />
+                        <MiniStatRow label="Total projected value" value={fmt(futureValue)} />
+                        <MiniStatRow
+                          label="Net profit / ROI"
+                          value={`${fmtSigned(profit)} (${roi >= 0 ? "+" : ""}${roi.toFixed(1)}%)`}
+                          valueColor={profit >= 0 ? "#34d399" : "#f87171"}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function MiniStatRow({ label, value, valueColor }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <span style={{ fontSize: 12, color: "#8b93a7" }}>{label}</span>
+      <span style={{ fontSize: 13, fontWeight: 700, color: valueColor || "#f4f6fb" }}>{value}</span>
+    </div>
+  );
+}
+
+/* ---------------- 5. Investment Allocation Simulator ---------------- */
+
+function InvestmentAllocationSimulator({ collectedPrincipal, assumedRate, setAssumedRate }) {
+  const [simAmount, setSimAmount] = useState("");
+  const [goldPct, setGoldPct] = useState(50);
+
+  const baseAmount = parseFloat(simAmount) || collectedPrincipal || 0;
+  const rate = (parseFloat(assumedRate) || 0) / 100;
+  const goldAmount = baseAmount * (goldPct / 100);
+  const cashAmount = baseAmount - goldAmount;
+
+  const data = [0, 1, 2, 3, 4, 5].map((yr) => ({
+    name: yr === 0 ? "Now" : `Yr ${yr}`,
+    Gold: goldAmount * Math.pow(1 + rate, yr),
+    Cash: cashAmount,
+  }));
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
+      <WealthSectionHeader
+        icon={<Calculator size={15} color="#5bb8ff" />}
+        title="Investment Allocation Simulator"
+        subtitle="Hypothetical only — the fund doesn't currently hold gold or investments."
+      />
+
+      <label style={labelStyle}>Amount to Simulate (৳)</label>
+      <input
+        type="number" min="0" placeholder={`Defaults to collected: ${fmt(collectedPrincipal)}`}
+        value={simAmount} onChange={(e) => setSimAmount(e.target.value)}
+        style={{ ...inputStyle, marginBottom: 14 }}
+      />
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+        <label style={{ ...labelStyle, marginBottom: 0 }}>Gold Allocation</label>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#eab308" }}>{goldPct}%</span>
+      </div>
+      <input
+        type="range" min="0" max="100" value={goldPct}
+        onChange={(e) => setGoldPct(parseInt(e.target.value, 10))}
+        style={{ width: "100%", marginBottom: 14 }}
+      />
+
+      <label style={labelStyle}>Assumed Annual Growth Rate for Gold (%, editable estimate)</label>
+      <input
+        type="number" min="0" step="0.5" value={assumedRate}
+        onChange={(e) => setAssumedRate(e.target.value)}
+        style={{ ...inputStyle, marginBottom: 16 }}
+      />
+
+      <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#eab308", display: "inline-block" }} />
+          <span style={{ color: "#8b93a7" }}>Gold: {fmt(goldAmount)}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#5b6478", display: "inline-block" }} />
+          <span style={{ color: "#8b93a7" }}>Cash: {fmt(cashAmount)}</span>
+        </div>
+      </div>
+
+      <div style={{ height: 170 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+            <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+            <XAxis dataKey="name" tick={{ fill: "#5b6478", fontSize: 10 }} axisLine={false} tickLine={false} />
+            <YAxis hide />
+            <Tooltip
+              formatter={(v, name) => [fmt(v), name]}
+              contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 12 }}
+              labelStyle={{ color: "#8b93a7" }}
+            />
+            <Legend wrapperStyle={{ fontSize: 11.5, color: "#8b93a7" }} iconType="plainline" iconSize={14} />
+            <Line type="monotone" dataKey="Gold" stroke="#eab308" strokeWidth={2.5} dot={false} />
+            <Line type="monotone" dataKey="Cash" stroke="#5b6478" strokeWidth={1.5} strokeDasharray="5 5" dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- 6. Personal Profit Calculator ---------------- */
+
+function PersonalProfitCalculator({ members, statsById, currentRatePerGram, assumedRate }) {
+  const [memberId, setMemberId] = useState("");
+  const member = members.find((m) => m.id === parseInt(memberId, 10));
+  const stats = member ? statsById[member.id] : null;
+  const hasRate = currentRatePerGram != null && currentRatePerGram > 0;
+
+  const weightGrams = stats && hasRate ? stats.paidPrincipal / currentRatePerGram : 0;
+  const rate = (parseFloat(assumedRate) || 0) / 100;
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
+      <WealthSectionHeader
+        icon={<Users size={15} color="#5bb8ff" />}
+        title="Personal Profit Calculator"
+        subtitle="See your own contribution's gold-equivalent weight, and a hypothetical growth projection."
+      />
+
+      <label style={labelStyle}>Select Member</label>
+      <select value={memberId} onChange={(e) => setMemberId(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }}>
+        <option value="">Choose a member...</option>
+        {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+      </select>
+
+      {member && stats && (
+        !hasRate ? (
+          <div style={{ fontSize: 12.5, color: "#5b6478", textAlign: "center", padding: "8px 0" }}>
+            Waiting for admin to log today's gold rate.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <ProjectionRow label="Total Contributed" value={fmt(stats.paidPrincipal)} />
+            <ProjectionRow label="Gold-Equivalent Weight (today)" value={`${weightGrams.toFixed(2)}g (${(weightGrams / GRAMS_PER_BHORI).toFixed(2)} bhori)`} />
+            {[1, 3, 5].map((yr) => {
+              const futureVal = stats.paidPrincipal * Math.pow(1 + rate, yr);
+              return (
+                <ProjectionRow
+                  key={yr}
+                  label={`Hypothetical value in ${yr} yr${yr > 1 ? "s" : ""} (@ ${assumedRate}%/yr)`}
+                  value={fmt(futureVal)}
+                  highlight={yr === 3}
+                />
+              );
+            })}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+/* ---------------- 9. Commercial Store & Rent Simulator ---------------- */
+
+function CommercialStoreRentSimulator({ members, totalShares }) {
+  const [storeValueInput, setStoreValueInput] = useState("");
+  const [monthlyRentInput, setMonthlyRentInput] = useState("");
+  const [leaseTermInput, setLeaseTermInput] = useState("5");
+  const [memberId, setMemberId] = useState("");
+
+  const storeValue = parseFloat(storeValueInput) || 0;
+  const monthlyRent = parseFloat(monthlyRentInput) || 0;
+  const leaseTerm = parseFloat(leaseTermInput) || 0;
+  const APPRECIATION_RATE = 0.08;
+
+  const annualRentalYield = storeValue > 0 ? ((monthlyRent * 12) / storeValue) * 100 : 0;
+  const appreciation3yr = storeValue * Math.pow(1 + APPRECIATION_RATE, 3) - storeValue;
+  const appreciation5yr = storeValue * Math.pow(1 + APPRECIATION_RATE, 5) - storeValue;
+  const rentalCashOverLease = monthlyRent * 12 * leaseTerm;
+  const appreciationOverLease = storeValue * Math.pow(1 + APPRECIATION_RATE, leaseTerm) - storeValue;
+  const totalCombinedReturn = rentalCashOverLease + appreciationOverLease;
+
+  const member = members.find((m) => m.id === parseInt(memberId, 10));
+  const memberOwnership = member && totalShares > 0 ? (member.shares / totalShares) * 100 : 0;
+  const memberMonthlyDividend = monthlyRent * (memberOwnership / 100);
+
+  const hasInput = storeValue > 0 && monthlyRent > 0;
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
+      <WealthSectionHeader
+        icon={<Landmark size={15} color="#5bb8ff" />}
+        title="Commercial Store & Rent Simulator"
+        subtitle="A hypothetical planning tool — the fund does not currently own this or any property."
+      />
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+        <div>
+          <label style={labelStyle}>Target Store Value (৳)</label>
+          <input type="number" min="0" placeholder="e.g. 5000000" value={storeValueInput} onChange={(e) => setStoreValueInput(e.target.value)} style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>Monthly Rent (৳)</label>
+          <input type="number" min="0" placeholder="e.g. 40000" value={monthlyRentInput} onChange={(e) => setMonthlyRentInput(e.target.value)} style={inputStyle} />
+        </div>
+      </div>
+      <label style={labelStyle}>Lease Term (Years)</label>
+      <input type="number" min="0" value={leaseTermInput} onChange={(e) => setLeaseTermInput(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }} />
+
+      {hasInput && (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+            <ProjectionRow label="Annual Rental Yield" value={`${annualRentalYield.toFixed(2)}%`} />
+            <ProjectionRow label="3-Year Property Appreciation (@ 8%/yr)" value={fmt(appreciation3yr)} />
+            <ProjectionRow label="5-Year Property Appreciation (@ 8%/yr)" value={fmt(appreciation5yr)} />
+            <ProjectionRow
+              label={`Total Combined Return (over ${leaseTerm}-yr lease)`}
+              value={fmt(totalCombinedReturn)}
+              highlight
+            />
+          </div>
+
+          <div style={{ height: 1, background: "rgba(255,255,255,0.07)", marginBottom: 16 }} />
+
+          <div style={{ fontSize: 11.5, letterSpacing: 0.6, color: "#8b93a7", fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>
+            Member Share Payout Breakdown
+          </div>
+          <select value={memberId} onChange={(e) => setMemberId(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }}>
+            <option value="">Choose a member...</option>
+            {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+          {member && (
+            <ProjectionRow
+              label={`${member.shares} shares = ${memberOwnership.toFixed(2)}% of monthly rent`}
+              value={fmt(memberMonthlyDividend)}
+              highlight
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- 8. Month-over-month comparison ---------------- */
+
+function MonthComparisonStat({ monthlyTotals }) {
+  let lastIdx = -1;
+  for (let i = monthlyTotals.length - 1; i >= 0; i--) {
+    if (monthlyTotals[i].value > 0) { lastIdx = i; break; }
+  }
+  if (lastIdx < 1) {
+    return (
+      <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
+        <WealthSectionHeader icon={<TrendingUp size={15} color="#5bb8ff" />} title="Month-over-Month Pace" />
+        <div style={{ fontSize: 12.5, color: "#5b6478" }}>Need at least two active months to compare.</div>
+      </div>
+    );
+  }
+  const current = monthlyTotals[lastIdx];
+  const previous = monthlyTotals[lastIdx - 1];
+  const diff = current.value - previous.value;
+  const pct = previous.value > 0 ? (diff / previous.value) * 100 : (current.value > 0 ? 100 : 0);
+  const up = diff >= 0;
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
+      <WealthSectionHeader icon={up ? <TrendingUp size={15} color="#34d399" /> : <TrendingDown size={15} color="#f87171" />} title="Month-over-Month Pace" />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontSize: 12, color: "#5b6478" }}>{previous.name} → {current.name}</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: "#f4f6fb", marginTop: 2 }}>{fmt(current.value)}</div>
+        </div>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", borderRadius: 999,
+          background: up ? "rgba(52,211,153,0.1)" : "rgba(248,113,113,0.1)",
+          border: up ? "1px solid rgba(52,211,153,0.3)" : "1px solid rgba(248,113,113,0.3)",
+        }}>
+          {up ? <TrendingUp size={13} color="#34d399" /> : <TrendingDown size={13} color="#f87171" />}
+          <span style={{ fontSize: 13, fontWeight: 700, color: up ? "#34d399" : "#f87171" }}>
+            {up ? "+" : ""}{pct.toFixed(0)}%
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MembersTab({ members, statsById, search, setSearch, isAdmin, onOpenMember, onAdd, onDelete }) {
   return (
     <div style={{ padding: "12px 16px 0" }}>
@@ -1290,7 +2145,16 @@ function MemberDetailModal({ member, stats, payments, receipts, isAdmin, onClose
               <div style={{ fontSize: 13, color: "#5b6478", marginTop: 2 }}>{stats.ownership.toFixed(1)}% ownership</div>
             </div>
           </div>
-          <button onClick={onClose} style={closeBtnStyle}><X size={18} color="#8b93a7" /></button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={() => generateMemberStatementPDF(member, stats, payments)}
+              title="Download statement (PDF)"
+              style={closeBtnStyle}
+            >
+              <FileText size={17} color="#8b93a7" />
+            </button>
+            <button onClick={onClose} style={closeBtnStyle}><X size={18} color="#8b93a7" /></button>
+          </div>
         </div>
 
         <div style={{ fontSize: 11.5, letterSpacing: 0.7, color: "#8b93a7", fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>
