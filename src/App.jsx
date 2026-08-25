@@ -1413,7 +1413,6 @@ function WealthLabTab({
   members, statsById, collectedPrincipal, totalPendingDues, totalShares,
   monthlyTotals, goldRates, isAdmin, onSaveGoldRate,
 }) {
-  const [assumedRate, setAssumedRate] = useState("10");
   const latest22k = findLatestRate(goldRates, "rate_22k");
   const currentRatePerGram = latest22k ? Number(latest22k.rate_22k) : null;
 
@@ -1437,20 +1436,7 @@ function WealthLabTab({
 
       <FundAllocationChart collectedPrincipal={collectedPrincipal} totalPendingDues={totalPendingDues} />
 
-      <InvestmentAllocationSimulator
-        collectedPrincipal={collectedPrincipal}
-        assumedRate={assumedRate}
-        setAssumedRate={setAssumedRate}
-      />
-
-      <PersonalProfitCalculator
-        members={members}
-        statsById={statsById}
-        currentRatePerGram={currentRatePerGram}
-        assumedRate={assumedRate}
-      />
-
-      <CommercialStoreRentSimulator members={members} totalShares={totalShares} />
+      <AssetStrategyComparison members={members} totalShares={totalShares} />
 
       <ProjectionsCalculator totalShares={totalShares} />
 
@@ -1536,29 +1522,44 @@ function GoldRateAdminPanel({ currentRate, lastUpdated, onSave }) {
 /* ---------------- 2. Gold Projection Simulator ---------------- */
 
 const HOLDING_PRESETS = [6, 12, 18, 24, 30, 36];
-const SCENARIOS = [
-  { key: "conservative", label: "Conservative", rate: 0.05, color: "#5bb8ff" },
-  { key: "average", label: "Historical Average", rate: 0.10, color: "#34d399" },
-  { key: "high", label: "High Growth", rate: 0.15, color: "#eab308" },
+const DEFAULT_SCENARIOS = [
+  { key: "conservative", label: "Conservative", rate: 15, color: "#5bb8ff" },
+  { key: "average", label: "Historical Average", rate: 20, color: "#34d399" },
+  { key: "high", label: "High Growth", rate: 25, color: "#eab308" },
 ];
 
 function GoldProjectionSimulator({ currentRatePerGram }) {
   const [amountInput, setAmountInput] = useState("");
   const [months, setMonths] = useState(12);
   const [customMonths, setCustomMonths] = useState("");
-  const [unit, setUnit] = useState("gram");
+  const [scenarioRates, setScenarioRates] = useState(
+    Object.fromEntries(DEFAULT_SCENARIOS.map((s) => [s.key, String(s.rate)]))
+  );
+  const [targetPriceInput, setTargetPriceInput] = useState("");
+  const [targetUnit, setTargetUnit] = useState("gram");
 
   const amount = parseFloat(amountInput) || 0;
   const effectiveMonths = customMonths ? parseFloat(customMonths) || 0 : months;
+  const years = effectiveMonths / 12;
   const hasRate = currentRatePerGram != null && currentRatePerGram > 0;
   const weightGrams = hasRate && amount > 0 ? amount / currentRatePerGram : 0;
+
+  const targetPriceRaw = parseFloat(targetPriceInput) || 0;
+  const targetPricePerGram = targetUnit === "bhori" ? targetPriceRaw / GRAMS_PER_BHORI : targetPriceRaw;
+  const hasTarget = targetPriceRaw > 0 && weightGrams > 0;
+  const liquidationValue = hasTarget ? weightGrams * targetPricePerGram : 0;
+  const targetProfit = liquidationValue - amount;
+  const targetRoi = amount > 0 ? (targetProfit / amount) * 100 : 0;
+  const requiredCAGR = hasTarget && years > 0 && currentRatePerGram > 0
+    ? (Math.pow(targetPricePerGram / currentRatePerGram, 1 / years) - 1) * 100
+    : null;
 
   return (
     <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
       <WealthSectionHeader
         icon={<Coins size={15} color="#eab308" />}
         title="Gold Projection Simulator"
-        subtitle="A what-if planning tool, not a guarantee — actual gold prices can rise or fall."
+        subtitle="A what-if planning tool, not a guarantee — actual gold prices can rise or fall. Growth rates below are editable estimates, not verified market data."
       />
 
       {!hasRate ? (
@@ -1611,10 +1612,10 @@ function GoldProjectionSimulator({ currentRatePerGram }) {
                 </div>
               </div>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {SCENARIOS.map((sc) => {
-                  const years = effectiveMonths / 12;
-                  const futurePrice = currentRatePerGram * Math.pow(1 + sc.rate, years);
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+                {DEFAULT_SCENARIOS.map((sc) => {
+                  const rate = (parseFloat(scenarioRates[sc.key]) || 0) / 100;
+                  const futurePrice = currentRatePerGram * Math.pow(1 + rate, years);
                   const futureValue = weightGrams * futurePrice;
                   const profit = futureValue - amount;
                   const roi = amount > 0 ? (profit / amount) * 100 : 0;
@@ -1625,7 +1626,19 @@ function GoldProjectionSimulator({ currentRatePerGram }) {
                     }}>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                         <span style={{ fontSize: 12.5, fontWeight: 700, color: sc.color }}>{sc.label}</span>
-                        <span style={{ fontSize: 11, color: "#5b6478" }}>+{(sc.rate * 100).toFixed(0)}%/yr</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <span style={{ fontSize: 12, color: sc.color, fontWeight: 700 }}>+</span>
+                          <input
+                            type="number" step="0.5" value={scenarioRates[sc.key]}
+                            onChange={(e) => setScenarioRates((prev) => ({ ...prev, [sc.key]: e.target.value }))}
+                            style={{
+                              width: 46, textAlign: "right", background: "rgba(255,255,255,0.05)",
+                              border: `1px solid ${sc.color}55`, borderRadius: 6, color: sc.color,
+                              fontSize: 12, fontWeight: 700, padding: "3px 4px", outline: "none",
+                            }}
+                          />
+                          <span style={{ fontSize: 11, color: "#5b6478" }}>%/yr</span>
+                        </div>
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         <MiniStatRow label="Projected gold price/g" value={fmt(futurePrice)} />
@@ -1640,6 +1653,49 @@ function GoldProjectionSimulator({ currentRatePerGram }) {
                   );
                 })}
               </div>
+
+              <div style={{ height: 1, background: "rgba(255,255,255,0.07)", marginBottom: 18 }} />
+
+              <div style={{ fontSize: 11.5, letterSpacing: 0.6, color: "#8b93a7", fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>
+                Or Test Your Own Target Price
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                <input
+                  type="number" min="0" placeholder="Target Selling Price"
+                  value={targetPriceInput} onChange={(e) => setTargetPriceInput(e.target.value)}
+                  style={{ ...inputStyle, flex: 1 }}
+                />
+                <div style={{ display: "flex", borderRadius: 11, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" }}>
+                  {["gram", "bhori"].map((u) => (
+                    <button
+                      key={u}
+                      onClick={() => setTargetUnit(u)}
+                      style={{
+                        padding: "0 14px", border: "none", cursor: "pointer", fontSize: 12.5, fontWeight: 700,
+                        background: targetUnit === u ? "rgba(91,184,255,0.15)" : "transparent",
+                        color: targetUnit === u ? "#5bb8ff" : "#8b93a7",
+                      }}
+                    >
+                      {u === "gram" ? "g" : "bhori"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {hasTarget && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <ProjectionRow label="Total Liquidation Value" value={fmt(liquidationValue)} />
+                  <ProjectionRow
+                    label="Net Profit / Loss"
+                    value={`${fmtSigned(targetProfit)} (${targetRoi >= 0 ? "+" : ""}${targetRoi.toFixed(1)}%)`}
+                  />
+                  <ProjectionRow
+                    label="Required Annualized Growth"
+                    value={requiredCAGR == null ? "N/A (need a holding period)" : `${requiredCAGR >= 0 ? "+" : ""}${requiredCAGR.toFixed(1)}%/yr`}
+                    highlight
+                  />
+                </div>
+              )}
             </>
           )}
         </>
@@ -1656,221 +1712,171 @@ function MiniStatRow({ label, value, valueColor }) {
     </div>
   );
 }
+/* ---------------- 5. Asset Strategy Comparison (Cash vs Gold vs Store & Rent) ---------------- */
 
-/* ---------------- 5. Investment Allocation Simulator ---------------- */
+const YEAR_PRESETS = [1, 3, 5, 7, 10];
 
-function InvestmentAllocationSimulator({ collectedPrincipal, assumedRate, setAssumedRate }) {
-  const [simAmount, setSimAmount] = useState("");
-  const [goldPct, setGoldPct] = useState(50);
-
-  const baseAmount = parseFloat(simAmount) || collectedPrincipal || 0;
-  const rate = (parseFloat(assumedRate) || 0) / 100;
-  const goldAmount = baseAmount * (goldPct / 100);
-  const cashAmount = baseAmount - goldAmount;
-
-  const data = [0, 1, 2, 3, 4, 5].map((yr) => ({
-    name: yr === 0 ? "Now" : `Yr ${yr}`,
-    Gold: goldAmount * Math.pow(1 + rate, yr),
-    Cash: cashAmount,
-  }));
-
-  return (
-    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
-      <WealthSectionHeader
-        icon={<Calculator size={15} color="#5bb8ff" />}
-        title="Investment Allocation Simulator"
-        subtitle="Hypothetical only — the fund doesn't currently hold gold or investments."
-      />
-
-      <label style={labelStyle}>Amount to Simulate (৳)</label>
-      <input
-        type="number" min="0" placeholder={`Defaults to collected: ${fmt(collectedPrincipal)}`}
-        value={simAmount} onChange={(e) => setSimAmount(e.target.value)}
-        style={{ ...inputStyle, marginBottom: 14 }}
-      />
-
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-        <label style={{ ...labelStyle, marginBottom: 0 }}>Gold Allocation</label>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#eab308" }}>{goldPct}%</span>
-      </div>
-      <input
-        type="range" min="0" max="100" value={goldPct}
-        onChange={(e) => setGoldPct(parseInt(e.target.value, 10))}
-        style={{ width: "100%", marginBottom: 14 }}
-      />
-
-      <label style={labelStyle}>Assumed Annual Growth Rate for Gold (%, editable estimate)</label>
-      <input
-        type="number" min="0" step="0.5" value={assumedRate}
-        onChange={(e) => setAssumedRate(e.target.value)}
-        style={{ ...inputStyle, marginBottom: 16 }}
-      />
-
-      <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#eab308", display: "inline-block" }} />
-          <span style={{ color: "#8b93a7" }}>Gold: {fmt(goldAmount)}</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#5b6478", display: "inline-block" }} />
-          <span style={{ color: "#8b93a7" }}>Cash: {fmt(cashAmount)}</span>
-        </div>
-      </div>
-
-      <div style={{ height: 170 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-            <XAxis dataKey="name" tick={{ fill: "#5b6478", fontSize: 10 }} axisLine={false} tickLine={false} />
-            <YAxis hide />
-            <Tooltip
-              formatter={(v, name) => [fmt(v), name]}
-              contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 12 }}
-              labelStyle={{ color: "#8b93a7" }}
-            />
-            <Legend wrapperStyle={{ fontSize: 11.5, color: "#8b93a7" }} iconType="plainline" iconSize={14} />
-            <Line type="monotone" dataKey="Gold" stroke="#eab308" strokeWidth={2.5} dot={false} />
-            <Line type="monotone" dataKey="Cash" stroke="#5b6478" strokeWidth={1.5} strokeDasharray="5 5" dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------- 6. Personal Profit Calculator ---------------- */
-
-function PersonalProfitCalculator({ members, statsById, currentRatePerGram, assumedRate }) {
-  const [memberId, setMemberId] = useState("");
-  const member = members.find((m) => m.id === parseInt(memberId, 10));
-  const stats = member ? statsById[member.id] : null;
-  const hasRate = currentRatePerGram != null && currentRatePerGram > 0;
-
-  const weightGrams = stats && hasRate ? stats.paidPrincipal / currentRatePerGram : 0;
-  const rate = (parseFloat(assumedRate) || 0) / 100;
-
-  return (
-    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
-      <WealthSectionHeader
-        icon={<Users size={15} color="#5bb8ff" />}
-        title="Personal Profit Calculator"
-        subtitle="See your own contribution's gold-equivalent weight, and a hypothetical growth projection."
-      />
-
-      <label style={labelStyle}>Select Member</label>
-      <select value={memberId} onChange={(e) => setMemberId(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }}>
-        <option value="">Choose a member...</option>
-        {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-      </select>
-
-      {member && stats && (
-        !hasRate ? (
-          <div style={{ fontSize: 12.5, color: "#5b6478", textAlign: "center", padding: "8px 0" }}>
-            Waiting for admin to log today's gold rate.
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <ProjectionRow label="Total Contributed" value={fmt(stats.paidPrincipal)} />
-            <ProjectionRow label="Gold-Equivalent Weight (today)" value={`${weightGrams.toFixed(2)}g (${(weightGrams / GRAMS_PER_BHORI).toFixed(2)} bhori)`} />
-            {[1, 3, 5].map((yr) => {
-              const futureVal = stats.paidPrincipal * Math.pow(1 + rate, yr);
-              return (
-                <ProjectionRow
-                  key={yr}
-                  label={`Hypothetical value in ${yr} yr${yr > 1 ? "s" : ""} (@ ${assumedRate}%/yr)`}
-                  value={fmt(futureVal)}
-                  highlight={yr === 3}
-                />
-              );
-            })}
-          </div>
-        )
-      )}
-    </div>
-  );
-}
-
-/* ---------------- 9. Commercial Store & Rent Simulator ---------------- */
-
-function CommercialStoreRentSimulator({ members, totalShares }) {
-  const [storeValueInput, setStoreValueInput] = useState("");
-  const [monthlyRentInput, setMonthlyRentInput] = useState("");
-  const [leaseTermInput, setLeaseTermInput] = useState("5");
+function AssetStrategyComparison({ members, totalShares }) {
+  const [capitalInput, setCapitalInput] = useState("1500000");
+  const [years, setYears] = useState(3);
+  const [customYears, setCustomYears] = useState("");
+  const [goldRateInput, setGoldRateInput] = useState("20");
+  const [propAppreciationInput, setPropAppreciationInput] = useState("8");
+  const [rentYieldInput, setRentYieldInput] = useState("10");
   const [memberId, setMemberId] = useState("");
 
-  const storeValue = parseFloat(storeValueInput) || 0;
-  const monthlyRent = parseFloat(monthlyRentInput) || 0;
-  const leaseTerm = parseFloat(leaseTermInput) || 0;
-  const APPRECIATION_RATE = 0.08;
+  const capital = parseFloat(capitalInput) || 0;
+  const T = customYears ? parseFloat(customYears) || 0 : years;
+  const goldRate = (parseFloat(goldRateInput) || 0) / 100;
+  const propRate = (parseFloat(propAppreciationInput) || 0) / 100;
+  const rentYield = (parseFloat(rentYieldInput) || 0) / 100;
 
-  const annualRentalYield = storeValue > 0 ? ((monthlyRent * 12) / storeValue) * 100 : 0;
-  const appreciation3yr = storeValue * Math.pow(1 + APPRECIATION_RATE, 3) - storeValue;
-  const appreciation5yr = storeValue * Math.pow(1 + APPRECIATION_RATE, 5) - storeValue;
-  const rentalCashOverLease = monthlyRent * 12 * leaseTerm;
-  const appreciationOverLease = storeValue * Math.pow(1 + APPRECIATION_RATE, leaseTerm) - storeValue;
-  const totalCombinedReturn = rentalCashOverLease + appreciationOverLease;
+  // Option A — Cash in Vault
+  const cashValue = capital;
+  const cashProfit = 0;
+
+  // Option B — 22K Gold Investment
+  const goldValue = capital * Math.pow(1 + goldRate, T);
+  const goldProfit = goldValue - capital;
+  const goldRoi = capital > 0 ? (goldProfit / capital) * 100 : 0;
+
+  // Option C — Commercial Store & Rent
+  const rentCollected = capital * rentYield * T;
+  const propertyValue = capital * Math.pow(1 + propRate, T);
+  const storeCombinedValue = propertyValue + rentCollected;
+  const storeProfit = storeCombinedValue - capital;
+  const storeRoi = capital > 0 ? (storeProfit / capital) * 100 : 0;
 
   const member = members.find((m) => m.id === parseInt(memberId, 10));
   const memberOwnership = member && totalShares > 0 ? (member.shares / totalShares) * 100 : 0;
-  const memberMonthlyDividend = monthlyRent * (memberOwnership / 100);
+  const ownershipFrac = memberOwnership / 100;
 
-  const hasInput = storeValue > 0 && monthlyRent > 0;
+  const hasInput = capital > 0 && T > 0;
 
   return (
     <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
       <WealthSectionHeader
         icon={<Landmark size={15} color="#5bb8ff" />}
-        title="Commercial Store & Rent Simulator"
-        subtitle="A hypothetical planning tool — the fund does not currently own this or any property."
+        title="Asset Strategy Comparison"
+        subtitle="A hypothetical planning tool — the fund does not currently hold gold or property. Every rate below is an editable assumption."
       />
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+      <label style={labelStyle}>Total Investment Capital (৳)</label>
+      <input
+        type="number" min="0" value={capitalInput}
+        onChange={(e) => setCapitalInput(e.target.value)}
+        style={{ ...inputStyle, marginBottom: 14 }}
+      />
+
+      <label style={labelStyle}>Strategy Time Horizon (Years)</label>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+        {YEAR_PRESETS.map((y) => (
+          <button
+            key={y}
+            onClick={() => { setYears(y); setCustomYears(""); }}
+            style={{
+              padding: "7px 13px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+              background: !customYears && years === y ? "rgba(91,184,255,0.15)" : "rgba(255,255,255,0.03)",
+              border: !customYears && years === y ? "1px solid rgba(91,184,255,0.4)" : "1px solid rgba(255,255,255,0.08)",
+              color: !customYears && years === y ? "#5bb8ff" : "#9aa3b8",
+            }}
+          >
+            {y} Yr
+          </button>
+        ))}
+      </div>
+      <input
+        type="number" min="0" step="0.5" placeholder="or type a custom number of years"
+        value={customYears} onChange={(e) => setCustomYears(e.target.value)}
+        style={{ ...inputStyle, marginBottom: 16, fontSize: 13 }}
+      />
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 18 }}>
         <div>
-          <label style={labelStyle}>Target Store Value (৳)</label>
-          <input type="number" min="0" placeholder="e.g. 5000000" value={storeValueInput} onChange={(e) => setStoreValueInput(e.target.value)} style={inputStyle} />
+          <label style={{ ...labelStyle, fontSize: 10.5 }}>Gold Growth %/yr</label>
+          <input type="number" step="0.5" value={goldRateInput} onChange={(e) => setGoldRateInput(e.target.value)} style={{ ...inputStyle, fontSize: 13, padding: "10px 10px" }} />
         </div>
         <div>
-          <label style={labelStyle}>Monthly Rent (৳)</label>
-          <input type="number" min="0" placeholder="e.g. 40000" value={monthlyRentInput} onChange={(e) => setMonthlyRentInput(e.target.value)} style={inputStyle} />
+          <label style={{ ...labelStyle, fontSize: 10.5 }}>Property Growth %/yr</label>
+          <input type="number" step="0.5" value={propAppreciationInput} onChange={(e) => setPropAppreciationInput(e.target.value)} style={{ ...inputStyle, fontSize: 13, padding: "10px 10px" }} />
+        </div>
+        <div>
+          <label style={{ ...labelStyle, fontSize: 10.5 }}>Rent Yield %/yr</label>
+          <input type="number" step="0.5" value={rentYieldInput} onChange={(e) => setRentYieldInput(e.target.value)} style={{ ...inputStyle, fontSize: 13, padding: "10px 10px" }} />
         </div>
       </div>
-      <label style={labelStyle}>Lease Term (Years)</label>
-      <input type="number" min="0" value={leaseTermInput} onChange={(e) => setLeaseTermInput(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }} />
 
       {hasInput && (
         <>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-            <ProjectionRow label="Annual Rental Yield" value={`${annualRentalYield.toFixed(2)}%`} />
-            <ProjectionRow label="3-Year Property Appreciation (@ 8%/yr)" value={fmt(appreciation3yr)} />
-            <ProjectionRow label="5-Year Property Appreciation (@ 8%/yr)" value={fmt(appreciation5yr)} />
-            <ProjectionRow
-              label={`Total Combined Return (over ${leaseTerm}-yr lease)`}
-              value={fmt(totalCombinedReturn)}
-              highlight
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+            <StrategyCard
+              label="Option A — Cash in Vault" color="#5b6478"
+              totalValue={cashValue} netProfit={cashProfit} roi={0}
+            />
+            <StrategyCard
+              label="Option B — 22K Gold Investment" color="#eab308"
+              totalValue={goldValue} netProfit={goldProfit} roi={goldRoi}
+            />
+            <StrategyCard
+              label="Option C — Commercial Store & Rent" color="#34d399"
+              totalValue={storeCombinedValue} netProfit={storeProfit} roi={storeRoi}
+              extra={[
+                { label: "Rent collected over term", value: fmt(rentCollected) },
+                { label: "Property value at end of term", value: fmt(propertyValue) },
+              ]}
             />
           </div>
 
-          <div style={{ height: 1, background: "rgba(255,255,255,0.07)", marginBottom: 16 }} />
+          <div style={{ height: 1, background: "rgba(255,255,255,0.07)", marginBottom: 18 }} />
 
           <div style={{ fontSize: 11.5, letterSpacing: 0.6, color: "#8b93a7", fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>
-            Member Share Payout Breakdown
+            Personal Profit Calculator
           </div>
-          <select value={memberId} onChange={(e) => setMemberId(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }}>
+          <label style={labelStyle}>Select Member</label>
+          <select value={memberId} onChange={(e) => setMemberId(e.target.value)} style={{ ...inputStyle, marginBottom: 14 }}>
             <option value="">Choose a member...</option>
             {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
+
           {member && (
-            <ProjectionRow
-              label={`${member.shares} shares = ${memberOwnership.toFixed(2)}% of monthly rent`}
-              value={fmt(memberMonthlyDividend)}
-              highlight
-            />
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <ProjectionRow label="Share Ownership" value={`${member.shares} shares (${memberOwnership.toFixed(2)}%)`} />
+              <ProjectionRow label="Cash Vault Equity" value={fmt(ownershipFrac * cashValue)} />
+              <ProjectionRow label="Gold Strategy Equity" value={fmt(ownershipFrac * goldValue)} />
+              <ProjectionRow label="↳ Net Profit from Gold" value={fmtSigned(ownershipFrac * goldProfit)} />
+              <ProjectionRow label="Store Strategy Equity" value={fmt(ownershipFrac * storeCombinedValue)} />
+              <ProjectionRow label="↳ Net Profit from Store" value={fmtSigned(ownershipFrac * storeProfit)} />
+              <ProjectionRow
+                label="Monthly Rent Dividend"
+                value={fmt((capital * rentYield / 12) * ownershipFrac)}
+                highlight
+              />
+            </div>
           )}
         </>
       )}
     </div>
   );
 }
+
+function StrategyCard({ label, color, totalValue, netProfit, roi, extra }) {
+  return (
+    <div style={{ padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.02)", border: `1px solid ${color}33` }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color, marginBottom: 10 }}>{label}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <MiniStatRow label="Total Value" value={fmt(totalValue)} />
+        {extra && extra.map((e, i) => <MiniStatRow key={i} label={e.label} value={e.value} />)}
+        <MiniStatRow
+          label="Net Profit / ROI"
+          value={`${fmtSigned(netProfit)} (${roi >= 0 ? "+" : ""}${roi.toFixed(1)}%)`}
+          valueColor={netProfit > 0 ? "#34d399" : netProfit < 0 ? "#f87171" : "#8b93a7"}
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- 8. Month-over-month comparison ---------------- */
 
 /* ---------------- 8. Month-over-month comparison ---------------- */
 
