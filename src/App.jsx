@@ -1438,6 +1438,8 @@ function WealthLabTab({
 
       <AssetStrategyComparison members={members} totalShares={totalShares} />
 
+      <StoreLeaseRentCalculator members={members} totalShares={totalShares} />
+
       <ProjectionsCalculator totalShares={totalShares} />
 
       <MonthComparisonStat monthlyTotals={monthlyTotals} />
@@ -1839,18 +1841,30 @@ function AssetStrategyComparison({ members, totalShares }) {
           </select>
 
           {member && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <ProjectionRow label="Share Ownership" value={`${member.shares} shares (${memberOwnership.toFixed(2)}%)`} />
-              <ProjectionRow label="Cash Vault Equity" value={fmt(ownershipFrac * cashValue)} />
-              <ProjectionRow label="Gold Strategy Equity" value={fmt(ownershipFrac * goldValue)} />
-              <ProjectionRow label="↳ Net Profit from Gold" value={fmtSigned(ownershipFrac * goldProfit)} />
-              <ProjectionRow label="Store Strategy Equity" value={fmt(ownershipFrac * storeCombinedValue)} />
-              <ProjectionRow label="↳ Net Profit from Store" value={fmtSigned(ownershipFrac * storeProfit)} />
-              <ProjectionRow
-                label="Monthly Rent Dividend"
-                value={fmt((capital * rentYield / 12) * ownershipFrac)}
-                highlight
-              />
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{
+                display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 6,
+                padding: "6px 12px", borderRadius: 999,
+                background: "rgba(100,116,139,0.15)", border: "1px solid rgba(100,116,139,0.4)",
+              }}>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: "#94a3b8" }}>
+                  {member.shares} shares · {memberOwnership.toFixed(2)}% ownership
+                </span>
+              </div>
+
+              <MetricRow label="Cash Vault Equity" value={fmt(ownershipFrac * cashValue)} color="#9CA3AF" />
+
+              <div style={{ padding: 12, borderRadius: 11, background: "rgba(245,158,11,0.05)", border: "1px solid rgba(245,158,11,0.3)", display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ fontSize: 11, letterSpacing: 0.5, color: "#F59E0B", fontWeight: 700, textTransform: "uppercase" }}>Gold Strategy</div>
+                <MetricRow label="Equity" value={fmt(ownershipFrac * goldValue)} color="#F59E0B" />
+                <MetricRow label="Net Profit" value={fmtSigned(ownershipFrac * goldProfit)} color={ownershipFrac * goldProfit >= 0 ? "#22C55E" : "#f87171"} />
+              </div>
+
+              <div style={{ padding: 12, borderRadius: 11, background: "rgba(16,185,129,0.05)", border: "1px solid rgba(16,185,129,0.3)", display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ fontSize: 11, letterSpacing: 0.5, color: "#10B981", fontWeight: 700, textTransform: "uppercase" }}>Store Strategy</div>
+                <MetricRow label="Equity" value={fmt(ownershipFrac * storeCombinedValue)} color="#10B981" />
+                <MetricRow label="Net Profit" value={fmtSigned(ownershipFrac * storeProfit)} color={ownershipFrac * storeProfit >= 0 ? "#22C55E" : "#f87171"} />
+              </div>
             </div>
           )}
         </>
@@ -1872,6 +1886,109 @@ function StrategyCard({ label, color, totalValue, netProfit, roi, extra }) {
           valueColor={netProfit > 0 ? "#34d399" : netProfit < 0 ? "#f87171" : "#8b93a7"}
         />
       </div>
+    </div>
+  );
+}
+
+function MetricRow({ label, value, color, boxed }) {
+  const content = (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <span style={{ fontSize: 12.5, color: "#8b93a7", fontWeight: 500 }}>{label}</span>
+      <span style={{ fontSize: 14.5, fontWeight: 700, color }}>{value}</span>
+    </div>
+  );
+  if (!boxed) return content;
+  return (
+    <div style={{
+      padding: "12px 14px", borderRadius: 11,
+      background: `${color}0D`, border: `1px solid ${color}4D`,
+    }}>
+      {content}
+    </div>
+  );
+}
+
+/* ---------------- Store Lease & Rent Payout Calculator (standalone) ---------------- */
+
+function StoreLeaseRentCalculator({ members, totalShares }) {
+  const [storeValueInput, setStoreValueInput] = useState("6000000");
+  const [monthlyRentInput, setMonthlyRentInput] = useState("50000");
+  const [leaseTermInput, setLeaseTermInput] = useState("5");
+  const [memberId, setMemberId] = useState("");
+
+  const storeValue = parseFloat(storeValueInput) || 0;
+  const totalMonthlyRent = parseFloat(monthlyRentInput) || 0;
+  const leaseTerm = parseFloat(leaseTermInput) || 0;
+  const impliedAnnualYield = storeValue > 0 ? ((totalMonthlyRent * 12) / storeValue) * 100 : 0;
+
+  const member = members.find((m) => m.id === parseInt(memberId, 10));
+  const ownershipPct = member && totalShares > 0 ? (member.shares / totalShares) * 100 : 0;
+  const monthlyDividend = totalMonthlyRent * (ownershipPct / 100);
+  const annualDividend = monthlyDividend * 12;
+  const totalOverLease = annualDividend * leaseTerm;
+
+  const hasInput = storeValue > 0 && totalMonthlyRent > 0;
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
+      <WealthSectionHeader
+        icon={<Landmark size={15} color="#06B6D4" />}
+        title="Store Lease & Monthly Rent Dividend"
+        subtitle="A hypothetical planning tool — the fund does not currently own or lease this store."
+      />
+
+      <label style={labelStyle}>Store Purchase / Lease Value (৳)</label>
+      <input
+        type="number" min="0" placeholder="e.g. 6000000" value={storeValueInput}
+        onChange={(e) => setStoreValueInput(e.target.value)}
+        style={{ ...inputStyle, marginBottom: 14 }}
+      />
+
+      <label style={labelStyle}>Total Monthly Rent Collected (৳)</label>
+      <input
+        type="number" min="0" placeholder="e.g. 50000" value={monthlyRentInput}
+        onChange={(e) => setMonthlyRentInput(e.target.value)}
+        style={{ ...inputStyle, marginBottom: 14 }}
+      />
+
+      <label style={labelStyle}>Lease Term (Years)</label>
+      <input
+        type="number" min="0" value={leaseTermInput}
+        onChange={(e) => setLeaseTermInput(e.target.value)}
+        style={{ ...inputStyle, marginBottom: 16 }}
+      />
+
+      {hasInput && (
+        <>
+          <MetricRow label="Implied Annual Rental Yield" value={`${impliedAnnualYield.toFixed(2)}%`} color="#8b93a7" />
+          <div style={{ height: 1, background: "rgba(255,255,255,0.07)", margin: "16px 0" }} />
+
+          <div style={{ fontSize: 11.5, letterSpacing: 0.6, color: "#8b93a7", fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>
+            Member Dividend
+          </div>
+          <select value={memberId} onChange={(e) => setMemberId(e.target.value)} style={{ ...inputStyle, marginBottom: 14 }}>
+            <option value="">Choose a member...</option>
+            {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+
+          {member && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{
+                display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 6,
+                padding: "6px 12px", borderRadius: 999,
+                background: "rgba(100,116,139,0.15)", border: "1px solid rgba(100,116,139,0.4)",
+              }}>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: "#94a3b8" }}>
+                  {member.shares} shares · {ownershipPct.toFixed(2)}% ownership
+                </span>
+              </div>
+              <MetricRow label="Monthly Rent Dividend" value={fmt(monthlyDividend)} color="#06B6D4" boxed />
+              <MetricRow label="Annual Rent Dividend" value={fmt(annualDividend)} color="#06B6D4" boxed />
+              <MetricRow label={`Total Rent over ${leaseTerm}-Yr Lease`} value={fmt(totalOverLease)} color="#06B6D4" boxed />
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
