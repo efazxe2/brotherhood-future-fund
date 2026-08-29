@@ -376,6 +376,7 @@ export default function App() {
   const [notices, setNotices] = useState([]);
   const [activityLog, setActivityLog] = useState([]);
   const [goldRates, setGoldRates] = useState([]);
+  const [maintenanceExpenses, setMaintenanceExpenses] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [connError, setConnError] = useState(false);
 
@@ -393,16 +394,17 @@ export default function App() {
   /* ---------------- Supabase: fetch + realtime ---------------- */
 
   const fetchAll = useCallback(async () => {
-    const [membersRes, paymentsRes, lateFeesRes, noticesRes, activityRes, goldRatesRes] = await Promise.all([
+    const [membersRes, paymentsRes, lateFeesRes, noticesRes, activityRes, goldRatesRes, expensesRes] = await Promise.all([
       supabase.from("members").select("*").order("id"),
       supabase.from("payments").select("*"),
       supabase.from("late_fees").select("*"),
       supabase.from("notices").select("*").order("created_at", { ascending: false }),
       supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(200),
       supabase.from("gold_rates").select("*").order("rate_date", { ascending: true }),
+      supabase.from("maintenance_expenses").select("*").order("expense_date", { ascending: false }),
     ]);
 
-    if (membersRes.error || paymentsRes.error || lateFeesRes.error || noticesRes.error || activityRes.error || goldRatesRes.error) {
+    if (membersRes.error || paymentsRes.error || lateFeesRes.error || noticesRes.error || activityRes.error || goldRatesRes.error || expensesRes.error) {
       setConnError(true);
       return null;
     }
@@ -432,6 +434,7 @@ export default function App() {
       notices: noticesRes.data || [],
       activityLog: activityRes.data || [],
       goldRates: goldRatesRes.data || [],
+      maintenanceExpenses: expensesRes.data || [],
     };
   }, []);
 
@@ -447,6 +450,7 @@ export default function App() {
         setNotices(d.notices);
         setActivityLog(d.activityLog);
         setGoldRates(d.goldRates);
+        setMaintenanceExpenses(d.maintenanceExpenses);
       }
       if (!cancelled) setLoaded(true);
     })();
@@ -464,6 +468,7 @@ export default function App() {
         setNotices(d.notices);
         setActivityLog(d.activityLog);
         setGoldRates(d.goldRates);
+        setMaintenanceExpenses(d.maintenanceExpenses);
       }
     };
 
@@ -475,6 +480,7 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "notices" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "activity_log" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "gold_rates" }, refetch)
+      .on("postgres_changes", { event: "*", schema: "public", table: "maintenance_expenses" }, refetch)
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
@@ -716,6 +722,22 @@ export default function App() {
     logActivity(`Logged gold rate for ${dateStr}`);
   };
 
+  const doAddExpense = async (description, amount, dateStr) => {
+    const { error } = await supabase
+      .from("maintenance_expenses")
+      .insert({ description, amount, expense_date: dateStr });
+    if (error) { showToast("Couldn't save expense"); return; }
+    showToast("Expense recorded");
+    logActivity(`Maintenance expense: ${description} — ${fmt(amount)}`);
+  };
+
+  const doDeleteExpense = async (id, description) => {
+    const { error } = await supabase.from("maintenance_expenses").delete().eq("id", id);
+    if (error) { showToast("Couldn't remove expense"); return; }
+    showToast("Expense removed");
+    logActivity(`Removed maintenance expense: ${description}`);
+  };
+
   const doSetLateFee = async (memberId, amount) => {
     const member = members.find((m) => m.id === memberId);
     const oldAmount = lateFees[memberId] || 0;
@@ -857,6 +879,9 @@ export default function App() {
             monthlyTotals={monthlyTotals}
             totalMaintenanceFee={totalMaintenanceFee}
             maintenanceFeeCollected={maintenanceFeeCollected}
+            maintenanceExpenses={maintenanceExpenses}
+            onAddExpense={doAddExpense}
+            onDeleteExpense={doDeleteExpense}
             notices={notices}
             isAdmin={isAdmin}
             onAddNotice={() => setModal({ type: "addNotice" })}
@@ -1063,6 +1088,7 @@ function OverviewTab({
   collectedPrincipal, progressPct, totalPendingDues, penaltyPool, elapsed,
   members, totalShares, yearlyTarget, remainingDues, monthlyTotals,
   totalMaintenanceFee, maintenanceFeeCollected,
+  maintenanceExpenses, onAddExpense, onDeleteExpense,
   notices, isAdmin, onAddNotice, onDeleteNotice,
 }) {
   const memberById = {};
@@ -1207,6 +1233,14 @@ function OverviewTab({
           <span style={{ fontSize: 15, fontWeight: 700, color: "#5bb8ff" }}>{fmt(yearlyTarget - totalMaintenanceFee)}</span>
         </div>
       </div>
+
+      <MaintenanceFundLedger
+        maintenanceFeeCollected={maintenanceFeeCollected}
+        maintenanceExpenses={maintenanceExpenses}
+        isAdmin={isAdmin}
+        onAddExpense={onAddExpense}
+        onDeleteExpense={onDeleteExpense}
+      />
 
       <div className="bff-card" style={{ padding: "18px 10px 8px", marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px", marginBottom: 6 }}>
@@ -2036,6 +2070,149 @@ function MonthComparisonStat({ monthlyTotals }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ---------------- Maintenance Fund Ledger ---------------- */
+
+function MaintenanceFundLedger({ maintenanceFeeCollected, maintenanceExpenses, isAdmin, onAddExpense, onDeleteExpense }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const totalExpenses = maintenanceExpenses.reduce((s, e) => s + Number(e.amount), 0);
+  const remaining = maintenanceFeeCollected - totalExpenses;
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Wallet size={15} color="#5bb8ff" />
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Maintenance Fund Ledger</span>
+        </div>
+        {isAdmin && (
+          <button onClick={() => setShowAdd(true)} className="bff-addbtn" style={{ padding: "0 14px", height: 34 }}>
+            <Plus size={14} /> Expense
+          </button>
+        )}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+        <MiniStatRow label="Collected" value={fmt(maintenanceFeeCollected)} />
+        <MiniStatRow label="Spent" value={fmt(totalExpenses)} valueColor="#f87171" />
+        <MiniStatRow label="Remaining" value={fmtSigned(remaining)} valueColor={remaining >= 0 ? "#34d399" : "#f87171"} />
+      </div>
+
+      {remaining < 0 && (
+        <div style={{
+          padding: "10px 12px", borderRadius: 10, background: "rgba(248,113,113,0.08)",
+          border: "1px solid rgba(248,113,113,0.25)", color: "#f87171", fontSize: 11.5, marginBottom: 14,
+        }}>
+          Expenses have exceeded what's been collected for maintenance so far — this is running at a deficit.
+        </div>
+      )}
+
+      {maintenanceExpenses.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: "#5b6478", padding: "4px 2px" }}>No expenses recorded yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {maintenanceExpenses.map((e) => (
+            <div key={e.id} style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+              padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.02)",
+              border: "1px solid rgba(255,255,255,0.05)",
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: "#e2e6f0", fontWeight: 600 }}>{e.description}</div>
+                <div style={{ fontSize: 11, color: "#5b6478", marginTop: 2 }}>{e.expense_date}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#f87171" }}>-{fmt(e.amount)}</span>
+                {isAdmin && (
+                  <button
+                    onClick={() => setConfirmDelete(e)}
+                    style={{
+                      width: 26, height: 26, borderRadius: 8, background: "rgba(248,113,113,0.08)",
+                      border: "1px solid rgba(248,113,113,0.25)", display: "flex", alignItems: "center",
+                      justifyContent: "center", color: "#f87171", cursor: "pointer",
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showAdd && (
+        <AddExpenseModal
+          onClose={() => setShowAdd(false)}
+          onSave={(description, amount, dateStr) => { onAddExpense(description, amount, dateStr); setShowAdd(false); }}
+        />
+      )}
+      {confirmDelete && (
+        <ConfirmDeleteExpenseModal
+          expense={confirmDelete}
+          onClose={() => setConfirmDelete(null)}
+          onConfirm={() => { onDeleteExpense(confirmDelete.id, confirmDelete.description); setConfirmDelete(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AddExpenseModal({ onClose, onSave }) {
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState("");
+  const [dateStr, setDateStr] = useState(todayStamp());
+
+  const submit = () => {
+    const trimmed = description.trim();
+    const amt = parseFloat(amount);
+    if (!trimmed || !amt || amt <= 0) return;
+    onSave(trimmed, amt, dateStr);
+  };
+
+  return (
+    <ModalShell onClose={onClose}>
+      <div style={{ padding: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <span style={{ fontSize: 17, fontWeight: 800, color: "#f4f6fb" }}>Record Expense</span>
+          <button onClick={onClose} style={closeBtnStyle}><X size={18} color="#8b93a7" /></button>
+        </div>
+        <label style={labelStyle}>Description</label>
+        <input autoFocus value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. Bank service charge" style={{ ...inputStyle, marginBottom: 16 }} />
+        <label style={labelStyle}>Amount (৳)</label>
+        <input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }} />
+        <label style={labelStyle}>Date</label>
+        <input type="date" value={dateStr} onChange={(e) => setDateStr(e.target.value)} style={{ ...inputStyle, marginBottom: 22 }} />
+        <button onClick={submit} className="bff-primarybtn">Save Expense</button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ConfirmDeleteExpenseModal({ expense, onClose, onConfirm }) {
+  return (
+    <ModalShell onClose={onClose}>
+      <div style={{ padding: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: "rgba(248,113,113,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Trash2 size={18} color="#f87171" />
+          </div>
+          <span style={{ fontSize: 17, fontWeight: 800, color: "#f4f6fb" }}>Remove Expense?</span>
+        </div>
+        <div style={{ fontSize: 14, color: "#8b93a7", marginBottom: 22, lineHeight: 1.5 }}>
+          Remove <strong style={{ color: "#f4f6fb" }}>{expense.description}</strong> ({fmt(expense.amount)})
+          from the maintenance ledger? This can't be undone.
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onClose} className="bff-secondarybtn">Cancel</button>
+          <button onClick={onConfirm} className="bff-dangerbtn">Remove</button>
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 
