@@ -4,7 +4,8 @@ import {
   Wallet, Search, UserPlus, Trash2, X, Check, TrendingUp,
   LayoutGrid, Users, Receipt, Pencil, ChevronRight, Activity, KeyRound, Wrench,
   Megaphone, AtSign, Plus, History, Bell, BellOff, Download, Paperclip, Eye,
-  Calculator, PieChart as PieChartIcon, Coins, TrendingDown, FileText, Settings2, Landmark
+  Calculator, PieChart as PieChartIcon, Coins, TrendingDown, FileText, Settings2, Landmark,
+  Trophy
 } from "lucide-react";
 import {
   AreaChart, Area, LineChart, Line, PieChart, Pie, Cell, Legend, ReferenceLine,
@@ -86,6 +87,32 @@ function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShar
 
 function initials(name) {
   return (name || "?").trim().charAt(0).toUpperCase();
+}
+
+// True only if this member's cumulative payments never fell short of the
+// cumulative expected amount at any point through the elapsed months —
+// a real month-by-month check, not just "caught up right now."
+function wasAlwaysOnPace(member, payments, elapsed) {
+  const memberPayments = payments[member.id] || {};
+  let cumulativePaid = 0;
+  for (let i = 0; i < elapsed; i++) {
+    cumulativePaid += memberPayments[MONTHS[i].key] || 0;
+    const cumulativeExpected = member.shares * ratesSumUpTo(i + 1);
+    if (cumulativePaid < cumulativeExpected) return false;
+  }
+  return cumulativePaid > 0;
+}
+
+function computeMemberBadges(member, members, payments, elapsed) {
+  const badges = [];
+  const maxShares = Math.max(...members.map((m) => m.shares));
+  if (member.shares === maxShares && maxShares > 0) {
+    badges.push({ key: "top", label: "Top Shareholder", icon: "trophy", color: "#eab308" });
+  }
+  if (wasAlwaysOnPace(member, payments, elapsed)) {
+    badges.push({ key: "ontime", label: "On-Time Saver", icon: "check", color: "#34d399" });
+  }
+  return badges;
 }
 
 // Web Push requires the VAPID key as a Uint8Array, but it's issued as a base64url string.
@@ -295,6 +322,35 @@ function StatusBadge({ status }) {
       <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.color, display: "inline-block" }} />
       {status}
     </span>
+  );
+}
+
+const BADGE_ICONS = { trophy: Trophy, check: ShieldCheck };
+
+function MemberBadges({ badges, size = "sm" }) {
+  if (!badges || badges.length === 0) return null;
+  const isSmall = size === "sm";
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+      {badges.map((b) => {
+        const Icon = BADGE_ICONS[b.icon] || Trophy;
+        return (
+          <span
+            key={b.key}
+            title={b.label}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              padding: isSmall ? "2px 8px" : "4px 10px", borderRadius: 999,
+              background: `${b.color}18`, border: `1px solid ${b.color}40`,
+              color: b.color, fontSize: isSmall ? 10.5 : 12, fontWeight: 700, whiteSpace: "nowrap",
+            }}
+          >
+            <Icon size={isSmall ? 10 : 12} />
+            {b.label}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
@@ -561,6 +617,7 @@ export default function App() {
   const penaltyPool = Object.values(lateFees).reduce((s, v) => s + (v || 0), 0);
 
   const statsById = {};
+  const badgesById = {};
   let collectedPrincipal = 0;
   let totalPendingDues = 0;
   let totalMaintenanceFee = 0;
@@ -568,6 +625,7 @@ export default function App() {
   members.forEach((m) => {
     const st = memberStats(m, payments, lateFees, elapsed, penaltyPool, totalShares);
     statsById[m.id] = st;
+    badgesById[m.id] = computeMemberBadges(m, members, payments, elapsed);
     collectedPrincipal += st.paidPrincipal;
     totalPendingDues += st.pendingDue;
     totalMaintenanceFee += st.maintenanceFeeOwed;
@@ -893,6 +951,7 @@ export default function App() {
           <MembersTab
             members={filteredMembers}
             statsById={statsById}
+            badgesById={badgesById}
             search={search}
             setSearch={setSearch}
             isAdmin={isAdmin}
@@ -946,6 +1005,7 @@ export default function App() {
           stats={statsById[selectedMember.id]}
           payments={payments[selectedMember.id] || {}}
           receipts={receipts[selectedMember.id] || {}}
+          badges={badgesById[selectedMember.id]}
           isAdmin={isAdmin}
           onClose={() => setSelectedMember(null)}
           onEditLateFee={() => setModal({ type: "editLateFee", payload: selectedMember })}
@@ -1447,8 +1507,16 @@ function WealthLabTab({
   members, statsById, collectedPrincipal, totalPendingDues, totalShares,
   monthlyTotals, goldRates, isAdmin, onSaveGoldRate,
 }) {
+  const [subTab, setSubTab] = useState("fund");
   const latest22k = findLatestRate(goldRates, "rate_22k");
   const currentRatePerGram = latest22k ? Number(latest22k.rate_22k) : null;
+
+  const SUB_TABS = [
+    { key: "fund", label: "Fund" },
+    { key: "gold", label: "Gold" },
+    { key: "property", label: "Property" },
+    { key: "savings", label: "Savings" },
+  ];
 
   return (
     <div style={{ padding: "12px 16px 0" }}>
@@ -1460,23 +1528,51 @@ function WealthLabTab({
         </div>
       </div>
 
-      {isAdmin && (
-        <GoldRateAdminPanel currentRate={currentRatePerGram} lastUpdated={latest22k?.rate_date} onSave={onSaveGoldRate} />
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, overflowX: "auto" }}>
+        {SUB_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setSubTab(t.key)}
+            style={{
+              flex: 1, padding: "10px 0", borderRadius: 11, fontSize: 13, fontWeight: 700, cursor: "pointer",
+              whiteSpace: "nowrap",
+              background: subTab === t.key ? "rgba(91,184,255,0.15)" : "rgba(255,255,255,0.03)",
+              border: subTab === t.key ? "1px solid rgba(91,184,255,0.4)" : "1px solid rgba(255,255,255,0.08)",
+              color: subTab === t.key ? "#5bb8ff" : "#9aa3b8",
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {subTab === "fund" && (
+        <>
+          <CumulativeGrowthChart monthlyTotals={monthlyTotals} totalShares={totalShares} />
+          <FundAllocationChart collectedPrincipal={collectedPrincipal} totalPendingDues={totalPendingDues} />
+          <MonthComparisonStat monthlyTotals={monthlyTotals} />
+        </>
       )}
 
-      <GoldProjectionSimulator currentRatePerGram={currentRatePerGram} />
+      {subTab === "gold" && (
+        <>
+          {isAdmin && (
+            <GoldRateAdminPanel currentRate={currentRatePerGram} lastUpdated={latest22k?.rate_date} onSave={onSaveGoldRate} />
+          )}
+          <GoldProjectionSimulator currentRatePerGram={currentRatePerGram} />
+        </>
+      )}
 
-      <CumulativeGrowthChart monthlyTotals={monthlyTotals} totalShares={totalShares} />
+      {subTab === "property" && (
+        <>
+          <AssetStrategyComparison members={members} totalShares={totalShares} />
+          <StoreLeaseRentCalculator members={members} totalShares={totalShares} />
+        </>
+      )}
 
-      <FundAllocationChart collectedPrincipal={collectedPrincipal} totalPendingDues={totalPendingDues} />
-
-      <AssetStrategyComparison members={members} totalShares={totalShares} />
-
-      <StoreLeaseRentCalculator members={members} totalShares={totalShares} />
-
-      <ProjectionsCalculator totalShares={totalShares} />
-
-      <MonthComparisonStat monthlyTotals={monthlyTotals} />
+      {subTab === "savings" && (
+        <ProjectionsCalculator totalShares={totalShares} />
+      )}
     </div>
   );
 }
@@ -2216,7 +2312,7 @@ function ConfirmDeleteExpenseModal({ expense, onClose, onConfirm }) {
   );
 }
 
-function MembersTab({ members, statsById, search, setSearch, isAdmin, onOpenMember, onAdd, onDelete }) {
+function MembersTab({ members, statsById, badgesById, search, setSearch, isAdmin, onOpenMember, onAdd, onDelete }) {
   return (
     <div style={{ padding: "12px 16px 0" }}>
       <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
@@ -2252,9 +2348,10 @@ function MembersTab({ members, statsById, search, setSearch, isAdmin, onOpenMemb
                 <Avatar name={m.name} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 16, fontWeight: 700, color: "#f4f6fb" }}>{m.name}</div>
-                  <div style={{ fontSize: 12.5, color: "#5b6478", marginTop: 1 }}>
+                  <div style={{ fontSize: 12.5, color: "#5b6478", marginTop: 1, marginBottom: badgesById?.[m.id]?.length ? 6 : 0 }}>
                     {m.shares} shares · {st.ownership.toFixed(1)}%
                   </div>
+                  <MemberBadges badges={badgesById?.[m.id]} />
                 </div>
                 <StatusBadge status={st.status} />
               </div>
@@ -2433,7 +2530,7 @@ function ActivityTab({ activityLog }) {
   );
 }
 
-function MemberDetailModal({ member, stats, payments, receipts, isAdmin, onClose, onEditLateFee, onEditShares, onEditMonth, onUploadReceipt, onRemoveReceipt }) {
+function MemberDetailModal({ member, stats, payments, receipts, badges, isAdmin, onClose, onEditLateFee, onEditShares, onEditMonth, onUploadReceipt, onRemoveReceipt }) {
   return (
     <ModalShell onClose={onClose} align="bottom">
       <div style={{ padding: "22px 20px 28px" }}>
@@ -2442,7 +2539,8 @@ function MemberDetailModal({ member, stats, payments, receipts, isAdmin, onClose
             <Avatar name={member.name} size={52} />
             <div>
               <div style={{ fontSize: 20, fontWeight: 800, color: "#f4f6fb" }}>{member.name}</div>
-              <div style={{ fontSize: 13, color: "#5b6478", marginTop: 2 }}>{stats.ownership.toFixed(1)}% ownership</div>
+              <div style={{ fontSize: 13, color: "#5b6478", marginTop: 2, marginBottom: badges?.length ? 7 : 0 }}>{stats.ownership.toFixed(1)}% ownership</div>
+              <MemberBadges badges={badges} />
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
