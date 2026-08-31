@@ -433,6 +433,7 @@ export default function App() {
   const [activityLog, setActivityLog] = useState([]);
   const [goldRates, setGoldRates] = useState([]);
   const [maintenanceExpenses, setMaintenanceExpenses] = useState([]);
+  const [bankInterest, setBankInterest] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [connError, setConnError] = useState(false);
 
@@ -450,7 +451,7 @@ export default function App() {
   /* ---------------- Supabase: fetch + realtime ---------------- */
 
   const fetchAll = useCallback(async () => {
-    const [membersRes, paymentsRes, lateFeesRes, noticesRes, activityRes, goldRatesRes, expensesRes] = await Promise.all([
+    const [membersRes, paymentsRes, lateFeesRes, noticesRes, activityRes, goldRatesRes, expensesRes, interestRes] = await Promise.all([
       supabase.from("members").select("*").order("id"),
       supabase.from("payments").select("*"),
       supabase.from("late_fees").select("*"),
@@ -458,9 +459,10 @@ export default function App() {
       supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(200),
       supabase.from("gold_rates").select("*").order("rate_date", { ascending: true }),
       supabase.from("maintenance_expenses").select("*").order("expense_date", { ascending: false }),
+      supabase.from("bank_interest").select("*").order("entry_date", { ascending: false }),
     ]);
 
-    if (membersRes.error || paymentsRes.error || lateFeesRes.error || noticesRes.error || activityRes.error || goldRatesRes.error || expensesRes.error) {
+    if (membersRes.error || paymentsRes.error || lateFeesRes.error || noticesRes.error || activityRes.error || goldRatesRes.error || expensesRes.error || interestRes.error) {
       setConnError(true);
       return null;
     }
@@ -491,6 +493,7 @@ export default function App() {
       activityLog: activityRes.data || [],
       goldRates: goldRatesRes.data || [],
       maintenanceExpenses: expensesRes.data || [],
+      bankInterest: interestRes.data || [],
     };
   }, []);
 
@@ -507,6 +510,7 @@ export default function App() {
         setActivityLog(d.activityLog);
         setGoldRates(d.goldRates);
         setMaintenanceExpenses(d.maintenanceExpenses);
+        setBankInterest(d.bankInterest);
       }
       if (!cancelled) setLoaded(true);
     })();
@@ -525,6 +529,7 @@ export default function App() {
         setActivityLog(d.activityLog);
         setGoldRates(d.goldRates);
         setMaintenanceExpenses(d.maintenanceExpenses);
+        setBankInterest(d.bankInterest);
       }
     };
 
@@ -537,6 +542,7 @@ export default function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "activity_log" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "gold_rates" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "maintenance_expenses" }, refetch)
+      .on("postgres_changes", { event: "*", schema: "public", table: "bank_interest" }, refetch)
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
@@ -796,6 +802,22 @@ export default function App() {
     logActivity(`Removed maintenance expense: ${description}`);
   };
 
+  const doAddInterest = async (description, amount, dateStr) => {
+    const { error } = await supabase
+      .from("bank_interest")
+      .insert({ description, amount, entry_date: dateStr });
+    if (error) { showToast("Couldn't save interest entry"); return; }
+    showToast("Interest entry recorded");
+    logActivity(`Bank interest logged: ${description} — ${fmt(amount)}`);
+  };
+
+  const doDeleteInterest = async (id, description) => {
+    const { error } = await supabase.from("bank_interest").delete().eq("id", id);
+    if (error) { showToast("Couldn't remove interest entry"); return; }
+    showToast("Interest entry removed");
+    logActivity(`Removed bank interest entry: ${description}`);
+  };
+
   const doSetLateFee = async (memberId, amount) => {
     const member = members.find((m) => m.id === memberId);
     const oldAmount = lateFees[memberId] || 0;
@@ -940,6 +962,9 @@ export default function App() {
             maintenanceExpenses={maintenanceExpenses}
             onAddExpense={doAddExpense}
             onDeleteExpense={doDeleteExpense}
+            bankInterest={bankInterest}
+            onAddInterest={doAddInterest}
+            onDeleteInterest={doDeleteInterest}
             notices={notices}
             isAdmin={isAdmin}
             onAddNotice={() => setModal({ type: "addNotice" })}
@@ -1149,10 +1174,14 @@ function OverviewTab({
   members, totalShares, yearlyTarget, remainingDues, monthlyTotals,
   totalMaintenanceFee, maintenanceFeeCollected,
   maintenanceExpenses, onAddExpense, onDeleteExpense,
+  bankInterest, onAddInterest, onDeleteInterest,
   notices, isAdmin, onAddNotice, onDeleteNotice,
 }) {
   const memberById = {};
   members.forEach((m) => { memberById[m.id] = m; });
+  const totalMaintenanceSpent = maintenanceExpenses.reduce((s, e) => s + Number(e.amount), 0);
+  const totalInterest = bankInterest.reduce((s, i) => s + Number(i.amount), 0);
+  const actualBankBalance = (collectedPrincipal + totalInterest) - totalMaintenanceSpent;
 
   return (
     <div style={{ padding: "12px 16px 0" }}>
@@ -1259,6 +1288,17 @@ function OverviewTab({
         <StatCard icon={<Target />} iconBg="rgba(100,116,139,0.16)" iconColor="#94a3b8" label="Yearly Target" value={fmt(yearlyTarget)} />
         <StatCard icon={<Wallet />} iconBg="rgba(234,179,8,0.14)" iconColor="#eab308" label="Remaining Dues" value={fmt(remainingDues)} />
       </div>
+
+      <BankBalanceCard
+        collectedPrincipal={collectedPrincipal}
+        totalInterest={totalInterest}
+        totalMaintenanceSpent={totalMaintenanceSpent}
+        actualBankBalance={actualBankBalance}
+        bankInterest={bankInterest}
+        isAdmin={isAdmin}
+        onAddInterest={onAddInterest}
+        onDeleteInterest={onDeleteInterest}
+      />
 
       <div className="bff-card" style={{ padding: 18, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
@@ -2170,6 +2210,165 @@ function MonthComparisonStat({ monthlyTotals }) {
 }
 
 /* ---------------- Maintenance Fund Ledger ---------------- */
+
+/* ---------------- Actual Bank Balance ---------------- */
+
+function BankBalanceCard({
+  collectedPrincipal, totalInterest, totalMaintenanceSpent, actualBankBalance,
+  bankInterest, isAdmin, onAddInterest, onDeleteInterest,
+}) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [showLedger, setShowLedger] = useState(false);
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 14, border: "1px solid rgba(52,211,153,0.2)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Wallet size={16} color="#34d399" />
+          <span style={{ fontSize: 12, letterSpacing: 0.6, color: "#8b93a7", fontWeight: 700, textTransform: "uppercase" }}>
+            Actual Bank Balance
+          </span>
+        </div>
+        {isAdmin && (
+          <button onClick={() => setShowAdd(true)} className="bff-addbtn" style={{ padding: "0 12px", height: 30, fontSize: 12 }}>
+            <Plus size={12} /> Interest
+          </button>
+        )}
+      </div>
+
+      <div style={{ fontSize: 32, fontWeight: 800, color: "#34d399", letterSpacing: -0.5, marginBottom: 14 }}>
+        {fmtSigned(actualBankBalance)}
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+        <MiniStatRow label="Collected Principal" value={fmt(collectedPrincipal)} />
+        <MiniStatRow label="+ Interest Earned" value={fmt(totalInterest)} valueColor="#eab308" />
+        <MiniStatRow label="− Maintenance Spent" value={fmt(totalMaintenanceSpent)} valueColor="#f87171" />
+      </div>
+
+      <div style={{ fontSize: 11, color: "#5b6478", lineHeight: 1.4, marginBottom: showLedger || bankInterest.length > 0 ? 10 : 0 }}>
+        Interest is tracked separately here for transparency only — it is never added to any
+        member's equity or capital. It's set aside to be given to charity at year-end.
+      </div>
+
+      {bankInterest.length > 0 && (
+        <button
+          onClick={() => setShowLedger((v) => !v)}
+          style={{
+            width: "100%", padding: "8px 0", background: "transparent", border: "none",
+            color: "#5bb8ff", fontSize: 12, fontWeight: 700, cursor: "pointer", marginBottom: showLedger ? 10 : 0,
+          }}
+        >
+          {showLedger ? "Hide" : "Show"} Interest Ledger ({bankInterest.length})
+        </button>
+      )}
+
+      {showLedger && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {bankInterest.map((i) => (
+            <div key={i.id} style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+              padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.02)",
+              border: "1px solid rgba(255,255,255,0.05)",
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: "#e2e6f0", fontWeight: 600 }}>{i.description}</div>
+                <div style={{ fontSize: 11, color: "#5b6478", marginTop: 2 }}>{i.entry_date}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#eab308" }}>+{fmt(i.amount)}</span>
+                {isAdmin && (
+                  <button
+                    onClick={() => setConfirmDelete(i)}
+                    style={{
+                      width: 26, height: 26, borderRadius: 8, background: "rgba(248,113,113,0.08)",
+                      border: "1px solid rgba(248,113,113,0.25)", display: "flex", alignItems: "center",
+                      justifyContent: "center", color: "#f87171", cursor: "pointer",
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showAdd && (
+        <AddInterestModal
+          onClose={() => setShowAdd(false)}
+          onSave={(description, amount, dateStr) => { onAddInterest(description, amount, dateStr); setShowAdd(false); }}
+        />
+      )}
+      {confirmDelete && (
+        <ConfirmDeleteInterestModal
+          entry={confirmDelete}
+          onClose={() => setConfirmDelete(null)}
+          onConfirm={() => { onDeleteInterest(confirmDelete.id, confirmDelete.description); setConfirmDelete(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AddInterestModal({ onClose, onSave }) {
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState("");
+  const [dateStr, setDateStr] = useState(todayStamp());
+
+  const submit = () => {
+    const trimmed = description.trim();
+    const amt = parseFloat(amount);
+    if (!trimmed || !amt || amt <= 0) return;
+    onSave(trimmed, amt, dateStr);
+  };
+
+  return (
+    <ModalShell onClose={onClose}>
+      <div style={{ padding: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <span style={{ fontSize: 17, fontWeight: 800, color: "#f4f6fb" }}>Record Bank Interest</span>
+          <button onClick={onClose} style={closeBtnStyle}><X size={18} color="#8b93a7" /></button>
+        </div>
+        <div style={{ fontSize: 12, color: "#8b93a7", marginBottom: 16, lineHeight: 1.4 }}>
+          Tracked separately from equity — this only affects the bank balance figure shown above.
+        </div>
+        <label style={labelStyle}>Description</label>
+        <input autoFocus value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. Q1 savings account interest" style={{ ...inputStyle, marginBottom: 16 }} />
+        <label style={labelStyle}>Amount (৳)</label>
+        <input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }} />
+        <label style={labelStyle}>Date</label>
+        <input type="date" value={dateStr} onChange={(e) => setDateStr(e.target.value)} style={{ ...inputStyle, marginBottom: 22 }} />
+        <button onClick={submit} className="bff-primarybtn">Save Interest Entry</button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ConfirmDeleteInterestModal({ entry, onClose, onConfirm }) {
+  return (
+    <ModalShell onClose={onClose}>
+      <div style={{ padding: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: "rgba(248,113,113,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Trash2 size={18} color="#f87171" />
+          </div>
+          <span style={{ fontSize: 17, fontWeight: 800, color: "#f4f6fb" }}>Remove Interest Entry?</span>
+        </div>
+        <div style={{ fontSize: 14, color: "#8b93a7", marginBottom: 22, lineHeight: 1.5 }}>
+          Remove <strong style={{ color: "#f4f6fb" }}>{entry.description}</strong> ({fmt(entry.amount)}) from the
+          interest ledger? This can't be undone.
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onClose} className="bff-secondarybtn">Cancel</button>
+          <button onClick={onConfirm} className="bff-dangerbtn">Remove</button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
 
 function MaintenanceFundLedger({ maintenanceFeeCollected, maintenanceExpenses, isAdmin, onAddExpense, onDeleteExpense }) {
   const [showAdd, setShowAdd] = useState(false);
