@@ -2,10 +2,10 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Shield, Lock, ShieldCheck, AlertTriangle, Clock, Layers, Target,
   Wallet, Search, UserPlus, Trash2, X, Check, TrendingUp,
-  LayoutGrid, Users, Receipt, Pencil, ChevronRight, ChevronDown, Activity, KeyRound, Wrench,
+  LayoutGrid, Users, Receipt, Pencil, ChevronRight, Activity, KeyRound, Wrench,
   Megaphone, AtSign, Plus, History, Bell, BellOff, Download, Paperclip, Eye,
   Calculator, PieChart as PieChartIcon, Coins, TrendingDown, FileText, Settings2, Landmark,
-  Trophy, Calendar, ArrowUpRight, ArrowDownRight
+  Trophy, Calendar, ArrowUp, ChevronDown
 } from "lucide-react";
 import {
   AreaChart, Area, LineChart, Line, PieChart, Pie, Cell, Legend, ReferenceLine,
@@ -1171,11 +1171,45 @@ function formatDhakaTime(dateStr) {
   return `${time}, ${date}`;
 }
 
-function monthYearLabel(idx) {
-  const mo = MONTHS[idx];
-  if (!mo) return "";
-  const label = mo.label.charAt(0) + mo.label.slice(1).toLowerCase();
-  return `${label} ${mo.year}`;
+// "Today, 10:15 AM" / "Yesterday, 9:45 PM" / "Aug 3, 6:20 PM" — always in Dhaka time.
+function relativeDayLabel(dateStr) {
+  const d = new Date(dateStr);
+  const now = new Date();
+  const tzOpts = { timeZone: "Asia/Dhaka" };
+  const dDay = d.toLocaleDateString("en-CA", tzOpts);
+  const todayDay = now.toLocaleDateString("en-CA", tzOpts);
+  const yestDay = new Date(now.getTime() - 86400000).toLocaleDateString("en-CA", tzOpts);
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dhaka" });
+  if (dDay === todayDay) return `Today, ${time}`;
+  if (dDay === yestDay) return `Yesterday, ${time}`;
+  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "Asia/Dhaka" });
+  return `${date}, ${time}`;
+}
+
+// Turns a raw activity_log row into something presentable in the Recent Activities card.
+function parseActivityEntry(entry) {
+  const action = entry.action || "";
+  let m = action.match(/^Recorded (৳[\d,]+) for (.+?) —/);
+  if (m) {
+    return {
+      title: `Payment received from ${m[2]}`, amount: m[1], amountPrefix: "+",
+      amountColor: "#34d399", icon: ArrowUp, iconBg: "rgba(52,211,153,0.14)", iconColor: "#34d399",
+      time: relativeDayLabel(entry.created_at),
+    };
+  }
+  m = action.match(/^Cleared (.+?) payment for (.+)$/);
+  if (m) {
+    return {
+      title: `Payment cleared for ${m[2]}`, amount: null,
+      icon: Clock, iconBg: "rgba(245,185,66,0.14)", iconColor: "#f5b942",
+      time: relativeDayLabel(entry.created_at),
+    };
+  }
+  return {
+    title: action, amount: null,
+    icon: ShieldCheck, iconBg: "rgba(91,184,255,0.12)", iconColor: "#5bb8ff",
+    time: relativeDayLabel(entry.created_at),
+  };
 }
 
 function OverviewTab({
@@ -1187,32 +1221,36 @@ function OverviewTab({
   notices, isAdmin, onAddNotice, onDeleteNotice,
   activityLog, onViewActivity,
 }) {
-  const [noticesExpanded, setNoticesExpanded] = useState(false);
+  const [showAllNotices, setShowAllNotices] = useState(false);
 
   const memberById = {};
   members.forEach((m) => { memberById[m.id] = m; });
   const totalMaintenanceSpent = maintenanceExpenses.reduce((s, e) => s + Number(e.amount), 0);
   const totalInterest = bankInterest.reduce((s, i) => s + Number(i.amount), 0);
   const actualBankBalance = (collectedPrincipal + totalInterest) - totalMaintenanceSpent;
-  const collectedThisMonth = monthlyTotals[Math.max(elapsed - 1, 0)]?.value || 0;
-  const visibleNotices = noticesExpanded ? notices : notices.slice(0, 1);
+  const thisMonthCollected = monthlyTotals[Math.max(0, elapsed - 1)]?.value || 0;
+  const currentMonth = MONTHS[Math.max(0, elapsed - 1)];
+  const monthLabel = currentMonth
+    ? `${currentMonth.label.charAt(0)}${currentMonth.label.slice(1).toLowerCase()} ${currentMonth.year}`
+    : "";
+  const visibleNotices = showAllNotices ? notices : notices.slice(0, 2);
 
   return (
     <div style={{ padding: "12px 16px 0" }}>
-      {/* ---------------- Notices ---------------- */}
+      {/* Notices */}
       <div className="bff-card" style={{ padding: 18, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Megaphone size={16} color="#5bb8ff" />
             <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Notices</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            {notices.length > 1 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {notices.length > 2 && (
               <button
-                onClick={() => setNoticesExpanded((v) => !v)}
-                style={{ background: "transparent", border: "none", color: "#5bb8ff", fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 }}
+                onClick={() => setShowAllNotices((v) => !v)}
+                style={{ background: "none", border: "none", color: "#5bb8ff", fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 }}
               >
-                {noticesExpanded ? "Show Less" : "View All"}
+                {showAllNotices ? "Show Less" : "View All"}
               </button>
             )}
             {isAdmin && (
@@ -1276,243 +1314,335 @@ function OverviewTab({
         )}
       </div>
 
-      {/* ---------------- Quick stats strip ---------------- */}
-      <div className="bff-hscroll" style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-        <StatStripCard icon={<Users />} iconBg="rgba(52,211,153,0.14)" iconColor="#34d399" value={members.length} label="Members" sub="Active" />
-        <StatStripCard icon={<Layers />} iconBg="rgba(168,132,255,0.16)" iconColor="#b39dff" value={totalShares} label="Fund Shares" sub="Shares" />
-        <StatStripCard icon={<Wallet />} iconBg="rgba(52,211,153,0.14)" iconColor="#34d399" value={fmt(actualBankBalance)} label="Bank Balance" sub="Actual" highlighted />
-        <StatStripCard icon={<TrendingUp />} iconBg="rgba(91,184,255,0.16)" iconColor="#5bb8ff" value={fmt(collectedThisMonth)} label="Collected" sub="This Month" />
-        <StatStripCard icon={<Clock />} iconBg="rgba(245,185,66,0.16)" iconColor="#f5b942" value={fmt(totalPendingDues)} label="Pending Dues" sub="Across Members" />
-        <StatStripCard icon={<Calendar />} iconBg="rgba(91,184,255,0.16)" iconColor="#5bb8ff" value={elapsed} label="Months" sub="of 12 Active" />
-        <StatStripCard icon={<AlertTriangle />} iconBg="rgba(248,113,113,0.16)" iconColor="#f87171" value={fmt(penaltyPool)} label="Penalty Pool" sub="Collected" />
+      {/* Stat strip */}
+      <div style={{ display: "flex", gap: 10, overflowX: "auto", marginBottom: 14, paddingBottom: 4 }}>
+        <StripStat icon={<Users />} iconBg="rgba(52,211,153,0.14)" iconColor="#34d399"
+          label="Members" value={members.length} sub="Active" />
+        <StripStat icon={<Layers />} iconBg="rgba(168,85,247,0.14)" iconColor="#a78bfa"
+          label="Fund Shares" value={totalShares} sub="Shares" />
+        <StripStat icon={<Wallet />} iconBg="rgba(52,211,153,0.14)" iconColor="#34d399"
+          label="Bank Balance" value={fmt(actualBankBalance)} sub="Actual" highlight />
+        <StripStat icon={<TrendingUp />} iconBg="rgba(91,184,255,0.14)" iconColor="#5bb8ff"
+          label="Collected" value={fmt(thisMonthCollected)} sub="This Month" />
+        <StripStat icon={<Clock />} iconBg="rgba(245,185,66,0.14)" iconColor="#f5b942"
+          label="Pending Dues" value={fmt(totalPendingDues)} sub="Across Members" />
+        <StripStat icon={<Calendar />} iconBg="rgba(91,184,255,0.14)" iconColor="#5bb8ff"
+          label="Active Months" value={elapsed} sub="of 12" />
       </div>
 
-      {/* ---------------- Bank balance + Collection overview ---------------- */}
-      <div className="bff-grid2" style={{ marginBottom: 14 }}>
-        <BankBalanceCard
-          collectedPrincipal={collectedPrincipal}
-          totalInterest={totalInterest}
-          totalMaintenanceSpent={totalMaintenanceSpent}
-          actualBankBalance={actualBankBalance}
-          bankInterest={bankInterest}
-          isAdmin={isAdmin}
-          onAddInterest={onAddInterest}
-          onDeleteInterest={onDeleteInterest}
-        />
+      {/* Actual Bank Balance */}
+      <BankBalanceCard
+        collectedPrincipal={collectedPrincipal}
+        totalInterest={totalInterest}
+        totalMaintenanceSpent={totalMaintenanceSpent}
+        actualBankBalance={actualBankBalance}
+        bankInterest={bankInterest}
+        isAdmin={isAdmin}
+        onAddInterest={onAddInterest}
+        onDeleteInterest={onDeleteInterest}
+      />
+
+      {/* Collection Overview + Maintenance Fee & Ledger */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14, alignItems: "stretch" }}>
         <CollectionOverviewCard
           collectedPrincipal={collectedPrincipal}
           totalPendingDues={totalPendingDues}
           remainingDues={remainingDues}
           yearlyTarget={yearlyTarget}
           progressPct={progressPct}
-          elapsed={elapsed}
+          monthLabel={monthLabel}
         />
-      </div>
-
-      {/* ---------------- Maintenance ledger + payment pulse ---------------- */}
-      <div className="bff-grid2" style={{ marginBottom: 14 }}>
-        <MaintenanceFundLedger
-          maintenanceFeeCollected={maintenanceFeeCollected}
+        <MaintenanceCard
           totalMaintenanceFee={totalMaintenanceFee}
-          totalShares={totalShares}
+          maintenanceFeeCollected={maintenanceFeeCollected}
           maintenanceExpenses={maintenanceExpenses}
+          totalShares={totalShares}
           isAdmin={isAdmin}
           onAddExpense={onAddExpense}
           onDeleteExpense={onDeleteExpense}
         />
+      </div>
 
-        <div className="bff-card" style={{ padding: "16px 10px 10px" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 8px", marginBottom: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Activity size={15} color="#5bb8ff" />
-              <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Payment Pulse</span>
-            </div>
-            <span style={{
-              display: "inline-flex", alignItems: "center", gap: 3, padding: "4px 9px",
-              borderRadius: 999, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
-              color: "#c3cadb", fontSize: 10.5, fontWeight: 700, whiteSpace: "nowrap",
-            }}>
-              This Year <ChevronDown size={11} />
-            </span>
+      {/* Payment Pulse */}
+      <div className="bff-card" style={{ padding: "18px 10px 8px", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 10px", marginBottom: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Activity size={15} color="#5bb8ff" />
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Payment Pulse</span>
           </div>
-          <div style={{ height: 160 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={monthlyTotals} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="pulseFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#5bb8ff" stopOpacity={0.45} />
-                    <stop offset="100%" stopColor="#5bb8ff" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                <XAxis dataKey="name" tick={{ fill: "#5b6478", fontSize: 9.5 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-                <YAxis hide />
-                <Tooltip
-                  formatter={(v) => [fmt(v), "Collected"]}
-                  contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 12 }}
-                  labelStyle={{ color: "#8b93a7" }}
-                />
-                <Area type="monotone" dataKey="value" stroke="#5bb8ff" strokeWidth={2} fill="url(#pulseFill)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+          <span style={{
+            display: "inline-flex", alignItems: "center", gap: 4, padding: "5px 10px", borderRadius: 999,
+            background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
+            color: "#c3cadb", fontSize: 11.5, fontWeight: 600,
+          }}>
+            This Year <ChevronDown size={12} />
+          </span>
+        </div>
+        <div style={{ height: 160 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={monthlyTotals} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="pulseFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#5bb8ff" stopOpacity={0.45} />
+                  <stop offset="100%" stopColor="#5bb8ff" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+              <XAxis dataKey="name" tick={{ fill: "#5b6478", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis hide />
+              <Tooltip
+                formatter={(v) => [fmt(v), "Collected"]}
+                contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 12 }}
+                labelStyle={{ color: "#8b93a7" }}
+              />
+              <Area type="monotone" dataKey="value" stroke="#5bb8ff" strokeWidth={2} fill="url(#pulseFill)" />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
       </div>
 
-      {/* ---------------- Recent activities ---------------- */}
+      {/* Recent Activities */}
       <RecentActivitiesCard activityLog={activityLog} onViewAll={onViewActivity} />
     </div>
   );
 }
 
-function StatStripCard({ icon, iconBg, iconColor, value, label, sub, highlighted }) {
+function StripStat({ icon, iconBg, iconColor, label, value, sub, highlight }) {
   return (
-    <div
-      className="bff-card"
-      style={{
-        minWidth: 120, padding: "14px 12px", flexShrink: 0, textAlign: "center",
-        border: highlighted ? "1.5px solid rgba(52,211,153,0.55)" : "1px solid rgba(255,255,255,0.07)",
-        boxShadow: highlighted ? "0 0 0 3px rgba(52,211,153,0.08)" : "none",
-      }}
-    >
+    <div style={{
+      flex: "0 0 auto", width: 106, display: "flex", flexDirection: "column", alignItems: "center",
+      textAlign: "center", padding: "14px 8px", borderRadius: 16,
+      background: highlight ? "rgba(52,211,153,0.06)" : "rgba(255,255,255,0.02)",
+      border: highlight ? "1px solid rgba(52,211,153,0.4)" : "1px solid rgba(255,255,255,0.06)",
+    }}>
       <div style={{
-        width: 38, height: 38, borderRadius: 999, background: iconBg, margin: "0 auto 9px",
-        display: "flex", alignItems: "center", justifyContent: "center",
+        width: 38, height: 38, borderRadius: "50%", background: iconBg,
+        display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10,
       }}>
         {React.cloneElement(icon, { size: 17, color: iconColor })}
       </div>
-      <div style={{ fontSize: 16, fontWeight: 800, color: "#f4f6fb", letterSpacing: -0.2, whiteSpace: "nowrap" }}>{value}</div>
-      <div style={{ fontSize: 11, color: "#c3cadb", fontWeight: 600, marginTop: 3, whiteSpace: "nowrap" }}>{label}</div>
-      {sub && <div style={{ fontSize: 10, color: "#5b6478", marginTop: 1, whiteSpace: "nowrap" }}>{sub}</div>}
+      <div style={{ fontSize: 11, color: "#8b93a7", fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 17, fontWeight: 800, color: highlight ? "#34d399" : "#f4f6fb", marginTop: 3, letterSpacing: -0.2 }}>
+        {value}
+      </div>
+      {sub && <div style={{ fontSize: 10.5, color: "#5b6478", marginTop: 2 }}>{sub}</div>}
     </div>
   );
 }
 
-function CollectionOverviewCard({ collectedPrincipal, totalPendingDues, remainingDues, yearlyTarget, progressPct, elapsed }) {
+function CollectionOverviewCard({ collectedPrincipal, totalPendingDues, remainingDues, yearlyTarget, progressPct, monthLabel }) {
+  const ringRemaining = Math.max(0, remainingDues - totalPendingDues);
   const data = [
-    { name: "Collected", value: Math.max(collectedPrincipal, 0.0001) },
-    { name: "Remaining", value: Math.max(remainingDues, 0.0001) },
+    { name: "Collected", value: collectedPrincipal, color: "#34d399" },
+    { name: "Pending", value: totalPendingDues, color: "#5bb8ff" },
+    { name: "Remaining", value: ringRemaining, color: "#333a4d" },
   ];
 
   return (
-    <div className="bff-card" style={{ padding: 18 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, gap: 8, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Collection Overview</span>
-        <span style={{
-          display: "inline-flex", alignItems: "center", gap: 4, padding: "5px 10px",
-          borderRadius: 999, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
-          color: "#c3cadb", fontSize: 10.5, fontWeight: 700, whiteSpace: "nowrap",
-        }}>
-          {monthYearLabel(Math.max(elapsed - 1, 0))} <ChevronDown size={11} />
-        </span>
+    <div className="bff-card" style={{ padding: 16, display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: "#f4f6fb" }}>Collection Overview</span>
+        {monthLabel && (
+          <span style={{
+            display: "inline-flex", alignItems: "center", gap: 3, padding: "4px 8px", borderRadius: 999,
+            background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
+            color: "#c3cadb", fontSize: 10.5, fontWeight: 600, flexShrink: 0,
+          }}>
+            {monthLabel} <ChevronDown size={11} />
+          </span>
+        )}
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 18, flexWrap: "wrap" }}>
-        <div style={{ width: 108, height: 108, position: "relative", flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <div style={{ width: 96, height: 96, position: "relative", flexShrink: 0 }}>
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-              <Pie data={data} dataKey="value" innerRadius={36} outerRadius={52} startAngle={90} endAngle={-270} stroke="none">
-                <Cell fill="#5bb8ff" />
-                <Cell fill="rgba(255,255,255,0.08)" />
+              <Pie data={data} dataKey="value" nameKey="name" innerRadius={30} outerRadius={46} paddingAngle={2} stroke="none">
+                {data.map((d, i) => <Cell key={i} fill={d.color} />)}
               </Pie>
+              <Tooltip
+                formatter={(v, name) => [fmt(v), name]}
+                contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 11 }}
+              />
             </PieChart>
           </ResponsiveContainer>
           <div style={{
             position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-            alignItems: "center", justifyContent: "center", textAlign: "center",
+            alignItems: "center", justifyContent: "center", pointerEvents: "none",
           }}>
-            <div style={{ fontSize: 16, fontWeight: 800, color: "#f4f6fb" }}>{progressPct.toFixed(2)}%</div>
-            <div style={{ fontSize: 9, color: "#5b6478", fontWeight: 600 }}>of target</div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#f4f6fb" }}>{progressPct.toFixed(2)}%</div>
+            <div style={{ fontSize: 9, color: "#5b6478" }}>of target</div>
           </div>
         </div>
-
-        <div style={{ flex: 1, minWidth: 110, display: "flex", flexDirection: "column", gap: 10 }}>
-          <LegendRow color="#34d399" label="Collected" value={fmt(collectedPrincipal)} />
-          <LegendRow color="#5bb8ff" label="Pending" value={fmt(totalPendingDues)} />
-          <LegendRow color="#5b6478" label="Remaining" value={fmt(remainingDues)} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+          {data.map((d) => (
+            <div key={d.name} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: d.color, flexShrink: 0 }} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 10.5, color: "#8b93a7" }}>{d.name}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#f4f6fb" }}>
+                  {d.name === "Remaining" ? fmt(remainingDues) : fmt(d.value)}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-        <span style={{ fontSize: 11.5, color: "#8b93a7", fontWeight: 600 }}>Progress to Target</span>
-        <span style={{ fontSize: 11.5, fontWeight: 700, color: "#5bb8ff" }}>{progressPct.toFixed(2)}%</span>
-      </div>
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#f4f6fb", marginBottom: 8 }}>
-        {fmt(collectedPrincipal)} <span style={{ color: "#5b6478", fontWeight: 500 }}>of {fmt(yearlyTarget)}</span>
-      </div>
-      <div style={{ height: 7, borderRadius: 999, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
-        <div style={{
-          height: "100%", width: `${Math.max(progressPct, 1.5)}%`, borderRadius: 999,
-          background: "linear-gradient(90deg, #2f7fe0, #5bb8ff)",
-        }} />
+      <div>
+        <div style={{ fontSize: 11, color: "#8b93a7", marginBottom: 6 }}>Progress to Target</div>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8, gap: 6 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#f4f6fb" }}>
+            {fmt(collectedPrincipal)} of {fmt(yearlyTarget)}
+          </span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#5bb8ff", flexShrink: 0 }}>{progressPct.toFixed(2)}%</span>
+        </div>
+        <div style={{ height: 6, borderRadius: 999, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+          <div style={{
+            height: "100%", width: `${Math.max(progressPct, 1.5)}%`, borderRadius: 999,
+            background: "linear-gradient(90deg, #2f7fe0, #5bb8ff)",
+          }} />
+        </div>
       </div>
     </div>
   );
 }
 
-function LegendRow({ color, label, value }) {
+function TriStat({ label, value, color }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-        <span style={{ width: 8, height: 8, borderRadius: "50%", background: color, flexShrink: 0 }} />
-        <span style={{ fontSize: 12, color: "#c3cadb", whiteSpace: "nowrap" }}>{label}</span>
+    <div style={{ textAlign: "center", minWidth: 0 }}>
+      <div style={{ fontSize: 9.5, color: "#8b93a7", marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: color || "#f4f6fb", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {value}
       </div>
-      <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb", whiteSpace: "nowrap" }}>{value}</span>
+    </div>
+  );
+}
+
+function MaintenanceCard({ totalMaintenanceFee, maintenanceFeeCollected, maintenanceExpenses, totalShares, isAdmin, onAddExpense, onDeleteExpense }) {
+  const [expanded, setExpanded] = useState(false);
+  const totalExpenses = maintenanceExpenses.reduce((s, e) => s + Number(e.amount), 0);
+  const remaining = maintenanceFeeCollected - totalExpenses;
+  const latest = maintenanceExpenses[0];
+
+  return (
+    <div className="bff-card" style={{ padding: 16, display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: "#f4f6fb" }}>Maintenance Fee &amp; Ledger</span>
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          style={{ background: "none", border: "none", color: "#5bb8ff", fontSize: 10.5, fontWeight: 700, cursor: "pointer", padding: 0, flexShrink: 0 }}
+        >
+          {expanded ? "Hide" : "View All"}
+        </button>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <div style={{
+          width: 34, height: 34, borderRadius: 9, background: "rgba(52,211,153,0.14)",
+          display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+        }}>
+          <Wrench size={15} color="#34d399" />
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#f4f6fb" }}>Yearly Maintenance Fee</div>
+          <div style={{ fontSize: 10.5, color: "#5b6478" }}>৳{SEP_MAINTENANCE} x {totalShares} Shares</div>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 22, fontWeight: 800, color: "#34d399", letterSpacing: -0.3 }}>{fmt(totalMaintenanceFee)}</div>
+        <div style={{ fontSize: 10.5, color: "#5b6478", marginTop: 2 }}>Per Member (Yearly)</div>
+      </div>
+
+      <div style={{
+        display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6,
+        paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.06)",
+        marginBottom: latest ? 12 : 0,
+      }}>
+        <TriStat label="Collected" value={fmt(maintenanceFeeCollected)} />
+        <TriStat label="Spent" value={fmt(totalExpenses)} color="#f87171" />
+        <TriStat label="Remaining" value={fmtSigned(remaining)} color={remaining >= 0 ? "#34d399" : "#f87171"} />
+      </div>
+
+      {latest && (
+        <button
+          onClick={() => setExpanded(true)}
+          style={{
+            width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+            padding: "10px 0 0", borderTop: "1px solid rgba(255,255,255,0.06)", background: "none",
+            border: "none", borderTopWidth: 1, borderTopStyle: "solid", borderTopColor: "rgba(255,255,255,0.06)",
+            cursor: "pointer", textAlign: "left",
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11, color: "#8b93a7", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              Latest: {latest.description}
+            </div>
+            <div style={{ fontSize: 10, color: "#5b6478", marginTop: 2 }}>{latest.expense_date}</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#f87171" }}>-{fmt(latest.amount)}</span>
+            <ChevronRight size={14} color="#5b6478" />
+          </div>
+        </button>
+      )}
+
+      {expanded && (
+        <div style={{ marginTop: 14 }}>
+          <MaintenanceFundLedger
+            maintenanceFeeCollected={maintenanceFeeCollected}
+            maintenanceExpenses={maintenanceExpenses}
+            isAdmin={isAdmin}
+            onAddExpense={onAddExpense}
+            onDeleteExpense={onDeleteExpense}
+            embedded
+          />
+        </div>
+      )}
     </div>
   );
 }
 
 function RecentActivitiesCard({ activityLog, onViewAll }) {
-  const recent = activityLog.slice(0, 4);
+  const entries = activityLog.slice(0, 4);
   return (
-    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
+    <div className="bff-card" style={{ padding: 18, marginBottom: 14 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <History size={16} color="#5bb8ff" />
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Recent Activities</span>
-        </div>
-        {activityLog.length > 0 && (
-          <button
-            onClick={onViewAll}
-            style={{ background: "transparent", border: "none", color: "#5bb8ff", fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 }}
-          >
-            View All
-          </button>
-        )}
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Recent Activities</span>
+        <button
+          onClick={onViewAll}
+          style={{ background: "none", border: "none", color: "#5bb8ff", fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 }}
+        >
+          View All
+        </button>
       </div>
 
-      {recent.length === 0 ? (
+      {entries.length === 0 ? (
         <div style={{ fontSize: 13, color: "#5b6478", padding: "6px 2px" }}>No activity yet.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {recent.map((entry) => {
-            const isPositive = /^Recorded/.test(entry.action);
-            const isNegative = /^(Removed|Cleared|Deleted)/.test(entry.action);
-            const amountMatches = entry.action.match(/৳[\d,]+/g);
-            const amount = amountMatches ? amountMatches[amountMatches.length - 1] : null;
+          {entries.map((entry) => {
+            const parsed = parseActivityEntry(entry);
+            const Icon = parsed.icon;
             return (
               <div key={entry.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={{
-                  width: 34, height: 34, borderRadius: 999, flexShrink: 0,
-                  background: isPositive ? "rgba(52,211,153,0.12)" : isNegative ? "rgba(248,113,113,0.12)" : "rgba(91,184,255,0.12)",
-                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 34, height: 34, borderRadius: "50%", background: parsed.iconBg,
+                  display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
                 }}>
-                  {isPositive
-                    ? <ArrowUpRight size={15} color="#34d399" />
-                    : isNegative
-                      ? <ArrowDownRight size={15} color="#f87171" />
-                      : <ShieldCheck size={14} color="#5bb8ff" />}
+                  <Icon size={15} color={parsed.iconColor} />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, color: "#e2e6f0", lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {entry.action}
+                  <div style={{ fontSize: 13, color: "#e2e6f0", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {parsed.title}
                   </div>
-                  <div style={{ fontSize: 11, color: "#5b6478", marginTop: 2 }}>{timeAgo(entry.created_at)}</div>
+                  <div style={{ fontSize: 11, color: "#5b6478", marginTop: 2 }}>{parsed.time}</div>
                 </div>
-                {amount && (
-                  <span style={{ fontSize: 13, fontWeight: 700, color: isNegative ? "#f87171" : "#34d399", flexShrink: 0 }}>
-                    {isNegative ? "-" : "+"}{amount}
-                  </span>
+                {parsed.amount && (
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: parsed.amountColor, flexShrink: 0 }}>
+                    {parsed.amountPrefix}{parsed.amount}
+                  </div>
                 )}
               </div>
             );
@@ -2372,41 +2502,54 @@ function BankBalanceCard({
   const [showLedger, setShowLedger] = useState(false);
 
   return (
-    <div className="bff-card" style={{ padding: 18, border: "1px solid rgba(52,211,153,0.2)" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, gap: 8, flexWrap: "wrap" }}>
+    <div className="bff-card" style={{ padding: 18, marginBottom: 14, border: "1px solid rgba(52,211,153,0.2)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Landmark size={15} color="#34d399" />
-          <span style={{ fontSize: 12.5, fontWeight: 700, color: "#f4f6fb" }}>
+          <Wallet size={16} color="#34d399" />
+          <span style={{ fontSize: 12, letterSpacing: 0.6, color: "#8b93a7", fontWeight: 700, textTransform: "uppercase" }}>
             Actual Bank Balance
           </span>
         </div>
-        {isAdmin && (
-          <button onClick={() => setShowAdd(true)} className="bff-addbtn" style={{ padding: "0 11px", height: 28, fontSize: 11.5 }}>
-            <Plus size={11} /> Interest
-          </button>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {isAdmin && (
+            <button onClick={() => setShowAdd(true)} className="bff-addbtn" style={{ padding: "0 12px", height: 30, fontSize: 12 }}>
+              <Plus size={12} /> Interest
+            </button>
+          )}
+          <span style={{
+            display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px",
+            borderRadius: 999, background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.35)",
+            color: "#34d399", fontSize: 11, fontWeight: 700, flexShrink: 0,
+          }}>
+            <span className="bff-live-dot" /> Live
+          </span>
+        </div>
       </div>
 
-      <div style={{ fontSize: 30, fontWeight: 800, color: "#34d399", letterSpacing: -0.5, marginBottom: 16 }}>
+      <div style={{ fontSize: 32, fontWeight: 800, color: "#34d399", letterSpacing: -0.5, marginBottom: 14 }}>
         {fmtSigned(actualBankBalance)}
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
         <MiniStatRow label="Collected Principal" value={fmt(collectedPrincipal)} />
         <MiniStatRow label="+ Interest Earned" value={fmt(totalInterest)} valueColor="#eab308" />
         <MiniStatRow label="− Maintenance Spent" value={fmt(totalMaintenanceSpent)} valueColor="#f87171" />
       </div>
 
       <div style={{
-        display: "flex", alignItems: "flex-start", gap: 9, padding: "11px 12px", borderRadius: 12,
-        background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.25)",
+        display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 14px", borderRadius: 12,
+        background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.3)",
         marginBottom: showLedger || bankInterest.length > 0 ? 10 : 0,
       }}>
-        <ShieldCheck size={15} color="#34d399" style={{ flexShrink: 0, marginTop: 1 }} />
+        <ShieldCheck size={16} color="#34d399" style={{ marginTop: 2, flexShrink: 0 }} />
         <div>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "#34d399" }}>This is your actual available balance</div>
-          <div style={{ fontSize: 11, color: "#5b6478", marginTop: 1 }}>Shown for transparency only</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#eab308" }}>This is your actual available balance</div>
+          <div style={{ fontSize: 11, color: "#8b93a7", marginTop: 2 }}>Shown for transparency only</div>
         </div>
+      </div>
+
+      <div style={{ fontSize: 10.5, color: "#5b6478", lineHeight: 1.4, marginBottom: showLedger || bankInterest.length > 0 ? 8 : 0 }}>
+        Interest is tracked separately for transparency only — never added to member equity. Set aside for charity at year-end.
       </div>
 
       {bankInterest.length > 0 && (
@@ -2527,61 +2670,29 @@ function ConfirmDeleteInterestModal({ entry, onClose, onConfirm }) {
   );
 }
 
-function MaintenanceFundLedger({
-  maintenanceFeeCollected, totalMaintenanceFee, totalShares,
-  maintenanceExpenses, isAdmin, onAddExpense, onDeleteExpense,
-}) {
+function MaintenanceFundLedger({ maintenanceFeeCollected, maintenanceExpenses, isAdmin, onAddExpense, onDeleteExpense, embedded }) {
   const [showAdd, setShowAdd] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
-  const [showAll, setShowAll] = useState(false);
 
   const totalExpenses = maintenanceExpenses.reduce((s, e) => s + Number(e.amount), 0);
   const remaining = maintenanceFeeCollected - totalExpenses;
-  const latest = maintenanceExpenses[0];
-  const visibleExpenses = showAll ? maintenanceExpenses : (latest ? [latest] : []);
 
-  return (
-    <div className="bff-card" style={{ padding: 18 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, gap: 8, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{
-            width: 30, height: 30, borderRadius: 9, background: "rgba(52,211,153,0.14)",
-            display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-          }}>
-            <Wrench size={14} color="#34d399" />
-          </div>
-          <span style={{ fontSize: 12.5, fontWeight: 700, color: "#f4f6fb" }}>Maintenance Fee &amp; Ledger</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          {maintenanceExpenses.length > 1 && (
-            <button
-              onClick={() => setShowAll((v) => !v)}
-              style={{ background: "transparent", border: "none", color: "#5bb8ff", fontSize: 12, fontWeight: 700, cursor: "pointer", padding: 0 }}
-            >
-              {showAll ? "Show Less" : "View All"}
-            </button>
-          )}
-          {isAdmin && (
-            <button onClick={() => setShowAdd(true)} className="bff-addbtn" style={{ padding: "0 11px", height: 28, fontSize: 11.5 }}>
-              <Plus size={11} /> Expense
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontSize: 11.5, color: "#8b93a7", marginBottom: 2 }}>Yearly Maintenance Fee</div>
-          <div style={{ fontSize: 11, color: "#5b6478", marginBottom: 6 }}>৳{SEP_MAINTENANCE} x {totalShares} Shares</div>
-          <div style={{ fontSize: 21, fontWeight: 800, color: "#f4f6fb", letterSpacing: -0.3 }}>{fmt(totalMaintenanceFee)}</div>
-          <div style={{ fontSize: 10.5, color: "#5b6478", marginTop: 2 }}>Per Member (Yearly)</div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, textAlign: "right", minWidth: 92 }}>
-          <MiniStatRow label="Collected" value={fmt(maintenanceFeeCollected)} valueColor="#34d399" />
+  const body = (
+    <>
+      {!embedded && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+          <MiniStatRow label="Collected" value={fmt(maintenanceFeeCollected)} />
           <MiniStatRow label="Spent" value={fmt(totalExpenses)} valueColor="#f87171" />
-          <MiniStatRow label="Remaining" value={fmtSigned(remaining)} valueColor={remaining >= 0 ? "#f4f6fb" : "#f87171"} />
+          <MiniStatRow label="Remaining" value={fmtSigned(remaining)} valueColor={remaining >= 0 ? "#34d399" : "#f87171"} />
         </div>
-      </div>
+      )}
+      {embedded && isAdmin && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+          <button onClick={() => setShowAdd(true)} className="bff-addbtn" style={{ padding: "0 14px", height: 30, fontSize: 12 }}>
+            <Plus size={12} /> Expense
+          </button>
+        </div>
+      )}
 
       {remaining < 0 && (
         <div style={{
@@ -2592,50 +2703,39 @@ function MaintenanceFundLedger({
         </div>
       )}
 
-      <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 12 }}>
-        {maintenanceExpenses.length === 0 ? (
-          <div style={{ fontSize: 12.5, color: "#5b6478" }}>No expenses recorded yet.</div>
-        ) : (
-          <>
-            {!showAll && (
-              <div style={{ fontSize: 10.5, letterSpacing: 0.5, color: "#5b6478", fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                Latest
+      {maintenanceExpenses.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: "#5b6478", padding: "4px 2px" }}>No expenses recorded yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {maintenanceExpenses.map((e) => (
+            <div key={e.id} style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+              padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.02)",
+              border: "1px solid rgba(255,255,255,0.05)",
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: "#e2e6f0", fontWeight: 600 }}>{e.description}</div>
+                <div style={{ fontSize: 11, color: "#5b6478", marginTop: 2 }}>{e.expense_date}</div>
               </div>
-            )}
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {visibleExpenses.map((e) => (
-                <div key={e.id} style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-                  padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.02)",
-                  border: "1px solid rgba(255,255,255,0.05)",
-                }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 12.5, color: "#e2e6f0", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.description}</div>
-                    <div style={{ fontSize: 11, color: "#5b6478", marginTop: 2 }}>{e.expense_date}</div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: "#f87171" }}>-{fmt(e.amount)}</span>
-                    {isAdmin ? (
-                      <button
-                        onClick={() => setConfirmDelete(e)}
-                        style={{
-                          width: 24, height: 24, borderRadius: 7, background: "rgba(248,113,113,0.08)",
-                          border: "1px solid rgba(248,113,113,0.25)", display: "flex", alignItems: "center",
-                          justifyContent: "center", color: "#f87171", cursor: "pointer", flexShrink: 0,
-                        }}
-                      >
-                        <Trash2 size={11} />
-                      </button>
-                    ) : (
-                      <ChevronRight size={14} color="#5b6478" />
-                    )}
-                  </div>
-                </div>
-              ))}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#f87171" }}>-{fmt(e.amount)}</span>
+                {isAdmin && (
+                  <button
+                    onClick={() => setConfirmDelete(e)}
+                    style={{
+                      width: 26, height: 26, borderRadius: 8, background: "rgba(248,113,113,0.08)",
+                      border: "1px solid rgba(248,113,113,0.25)", display: "flex", alignItems: "center",
+                      justifyContent: "center", color: "#f87171", cursor: "pointer",
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
             </div>
-          </>
-        )}
-      </div>
+          ))}
+        </div>
+      )}
 
       {showAdd && (
         <AddExpenseModal
@@ -2650,6 +2750,25 @@ function MaintenanceFundLedger({
           onConfirm={() => { onDeleteExpense(confirmDelete.id, confirmDelete.description); setConfirmDelete(null); }}
         />
       )}
+    </>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Wallet size={15} color="#5bb8ff" />
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Maintenance Fund Ledger</span>
+        </div>
+        {isAdmin && (
+          <button onClick={() => setShowAdd(true)} className="bff-addbtn" style={{ padding: "0 14px", height: 34 }}>
+            <Plus size={14} /> Expense
+          </button>
+        )}
+      </div>
+      {body}
     </div>
   );
 }
@@ -3525,23 +3644,6 @@ function GlobalStyle() {
         0% { box-shadow: 0 0 0 0 rgba(52,211,153,0.6); }
         70% { box-shadow: 0 0 0 6px rgba(52,211,153,0); }
         100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
-      }
-      .bff-grid2 {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-        align-items: stretch;
-      }
-      .bff-grid2 > * { min-width: 0; }
-      @media (max-width: 400px) {
-        .bff-grid2 { grid-template-columns: 1fr; }
-      }
-      .bff-hscroll {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: thin;
-        padding-bottom: 6px;
-        margin-bottom: -6px;
       }
       ::-webkit-scrollbar { height: 6px; width: 6px; }
       ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 999px; }
