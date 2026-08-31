@@ -1312,18 +1312,16 @@ function OverviewTab({
 
       {/* Stat strip */}
       <div style={{ display: "flex", gap: 10, overflowX: "auto", marginBottom: 14, paddingBottom: 4 }}>
-        <StripStat icon={<Users />} iconBg="rgba(52,211,153,0.14)" iconColor="#34d399"
-          label="Members" value={members.length} sub="Active" />
-        <StripStat icon={<Layers />} iconBg="rgba(168,85,247,0.14)" iconColor="#a78bfa"
-          label="Fund Shares" value={totalShares} sub="Shares" />
-        <StripStat icon={<Wallet />} iconBg="rgba(52,211,153,0.14)" iconColor="#34d399"
-          label="Bank Balance" value={fmt(actualBankBalance)} sub="Actual" highlight />
         <StripStat icon={<TrendingUp />} iconBg="rgba(91,184,255,0.14)" iconColor="#5bb8ff"
           label="Collected" value={fmt(thisMonthCollected)} sub="This Month" />
         <StripStat icon={<Clock />} iconBg="rgba(245,185,66,0.14)" iconColor="#f5b942"
           label="Pending Dues" value={fmt(totalPendingDues)} sub="Across Members" />
-        <StripStat icon={<Calendar />} iconBg="rgba(91,184,255,0.14)" iconColor="#5bb8ff"
+        <StripStat icon={<Calendar />} iconBg="rgba(34,211,238,0.14)" iconColor="#22d3ee"
           label="Active Months" value={elapsed} sub="of 12" />
+        <StripStat icon={<Users />} iconBg="rgba(52,211,153,0.14)" iconColor="#34d399"
+          label="Members" value={members.length} sub="Active" />
+        <StripStat icon={<Layers />} iconBg="rgba(168,85,247,0.14)" iconColor="#a78bfa"
+          label="Fund Shares" value={totalShares} sub="Total Shares" />
       </div>
 
       {/* Actual Bank Balance */}
