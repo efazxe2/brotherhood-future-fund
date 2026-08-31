@@ -1229,10 +1229,6 @@ function OverviewTab({
   const totalInterest = bankInterest.reduce((s, i) => s + Number(i.amount), 0);
   const actualBankBalance = (collectedPrincipal + totalInterest) - totalMaintenanceSpent;
   const thisMonthCollected = monthlyTotals[Math.max(0, elapsed - 1)]?.value || 0;
-  const currentMonth = MONTHS[Math.max(0, elapsed - 1)];
-  const monthLabel = currentMonth
-    ? `${currentMonth.label.charAt(0)}${currentMonth.label.slice(1).toLowerCase()} ${currentMonth.year}`
-    : "";
   const visibleNotices = showAllNotices ? notices : notices.slice(0, 2);
 
   return (
@@ -1345,12 +1341,10 @@ function OverviewTab({
       {/* Collection Overview + Maintenance Fee & Ledger */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14, alignItems: "stretch" }}>
         <CollectionOverviewCard
-          collectedPrincipal={collectedPrincipal}
-          totalPendingDues={totalPendingDues}
-          remainingDues={remainingDues}
+          monthlyTotals={monthlyTotals}
+          totalShares={totalShares}
           yearlyTarget={yearlyTarget}
-          progressPct={progressPct}
-          monthLabel={monthLabel}
+          elapsed={elapsed}
         />
         <MaintenanceCard
           totalMaintenanceFee={totalMaintenanceFee}
@@ -1365,18 +1359,9 @@ function OverviewTab({
 
       {/* Payment Pulse */}
       <div className="bff-card" style={{ padding: "18px 10px 8px", marginBottom: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 10px", marginBottom: 6 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Activity size={15} color="#5bb8ff" />
-            <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Payment Pulse</span>
-          </div>
-          <span style={{
-            display: "inline-flex", alignItems: "center", gap: 4, padding: "5px 10px", borderRadius: 999,
-            background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
-            color: "#c3cadb", fontSize: 11.5, fontWeight: 600,
-          }}>
-            This Year <ChevronDown size={12} />
-          </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px", marginBottom: 6 }}>
+          <Activity size={15} color="#5bb8ff" />
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Payment Pulse</span>
         </div>
         <div style={{ height: 160 }}>
           <ResponsiveContainer width="100%" height="100%">
@@ -1430,27 +1415,49 @@ function StripStat({ icon, iconBg, iconColor, label, value, sub, highlight }) {
   );
 }
 
-function CollectionOverviewCard({ collectedPrincipal, totalPendingDues, remainingDues, yearlyTarget, progressPct, monthLabel }) {
-  const ringRemaining = Math.max(0, remainingDues - totalPendingDues);
+function CollectionOverviewCard({ monthlyTotals, totalShares, yearlyTarget, elapsed }) {
+  const [selectedIdx, setSelectedIdx] = useState(Math.max(0, elapsed - 1));
+
+  const cumulativeCollected = monthlyTotals
+    .slice(0, selectedIdx + 1)
+    .reduce((s, mo) => s + (mo?.value || 0), 0);
+  const cumulativeTarget = totalShares * ratesSumUpTo(selectedIdx + 1);
+  const pending = Math.max(0, cumulativeTarget - cumulativeCollected);
+  const remaining = Math.max(0, yearlyTarget - cumulativeCollected);
+  const ringRemaining = Math.max(0, remaining - pending);
+  const progressPct = yearlyTarget > 0 ? Math.min(100, (cumulativeCollected / yearlyTarget) * 100) : 0;
+
   const data = [
-    { name: "Collected", value: collectedPrincipal, color: "#34d399" },
-    { name: "Pending", value: totalPendingDues, color: "#5bb8ff" },
-    { name: "Remaining", value: ringRemaining, color: "#333a4d" },
+    { name: "Collected", value: cumulativeCollected, displayValue: cumulativeCollected, color: "#34d399" },
+    { name: "Pending", value: pending, displayValue: pending, color: "#F59E0B" },
+    { name: "Remaining", value: ringRemaining, displayValue: remaining, color: "#333a4d" },
   ];
 
   return (
     <div className="bff-card" style={{ padding: 16, display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
         <span style={{ fontSize: 12.5, fontWeight: 700, color: "#f4f6fb" }}>Collection Overview</span>
-        {monthLabel && (
-          <span style={{
-            display: "inline-flex", alignItems: "center", gap: 3, padding: "4px 8px", borderRadius: 999,
-            background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
-            color: "#c3cadb", fontSize: 10.5, fontWeight: 600, flexShrink: 0,
-          }}>
-            {monthLabel} <ChevronDown size={11} />
-          </span>
-        )}
+        <div style={{ position: "relative", flexShrink: 0 }}>
+          <select
+            value={selectedIdx}
+            onChange={(e) => setSelectedIdx(Number(e.target.value))}
+            style={{
+              appearance: "none", WebkitAppearance: "none", MozAppearance: "none",
+              padding: "4px 22px 4px 9px", borderRadius: 999, background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)", color: "#c3cadb", fontSize: 10.5, fontWeight: 600,
+              cursor: "pointer", outline: "none",
+            }}
+          >
+            {MONTHS.map((m, i) => (
+              <option key={m.key} value={i} style={{ background: "#0b0f18", color: "#f4f6fb" }}>
+                {m.label.charAt(0)}{m.label.slice(1).toLowerCase()} {m.year}
+              </option>
+            ))}
+          </select>
+          <ChevronDown size={11} color="#c3cadb" style={{
+            position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", pointerEvents: "none",
+          }} />
+        </div>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
@@ -1480,9 +1487,7 @@ function CollectionOverviewCard({ collectedPrincipal, totalPendingDues, remainin
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: d.color, flexShrink: 0 }} />
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 10.5, color: "#8b93a7" }}>{d.name}</div>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#f4f6fb" }}>
-                  {d.name === "Remaining" ? fmt(remainingDues) : fmt(d.value)}
-                </div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#f4f6fb" }}>{fmt(d.displayValue)}</div>
               </div>
             </div>
           ))}
@@ -1493,7 +1498,7 @@ function CollectionOverviewCard({ collectedPrincipal, totalPendingDues, remainin
         <div style={{ fontSize: 11, color: "#8b93a7", marginBottom: 6 }}>Progress to Target</div>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8, gap: 6 }}>
           <span style={{ fontSize: 12, fontWeight: 700, color: "#f4f6fb" }}>
-            {fmt(collectedPrincipal)} of {fmt(yearlyTarget)}
+            {fmt(cumulativeCollected)} of {fmt(yearlyTarget)}
           </span>
           <span style={{ fontSize: 12, fontWeight: 700, color: "#5bb8ff", flexShrink: 0 }}>{progressPct.toFixed(2)}%</span>
         </div>
