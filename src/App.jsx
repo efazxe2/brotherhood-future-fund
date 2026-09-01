@@ -422,6 +422,65 @@ function ModalShell({ onClose, children, align = "center" }) {
 /* App                                                                   */
 /* ------------------------------------------------------------------ */
 
+function SplashScreen({ fadingOut }) {
+  const R = 46;
+  const CIRC = 2 * Math.PI * R;
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, zIndex: 500,
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        background: "rgba(5,7,13,0.94)", backdropFilter: "blur(14px)",
+        opacity: fadingOut ? 0 : 1,
+        transition: "opacity 0.55s ease",
+        pointerEvents: fadingOut ? "none" : "auto",
+      }}
+    >
+      <div style={{ position: "relative", width: 104, height: 104, marginBottom: 4 }}>
+        <svg width="104" height="104" viewBox="0 0 104 104" style={{ position: "absolute", inset: 0 }}>
+          <circle cx="52" cy="52" r={R} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="3.5" />
+          <circle
+            cx="52" cy="52" r={R} fill="none" strokeWidth="3.5" strokeLinecap="round"
+            stroke="url(#bffSplashGradient)"
+            strokeDasharray={CIRC}
+            strokeDashoffset={CIRC * 0.7}
+            className="bff-splash-spin"
+          />
+          <defs>
+            <linearGradient id="bffSplashGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#D4AF37" />
+              <stop offset="100%" stopColor="#10B981" />
+            </linearGradient>
+          </defs>
+        </svg>
+        <div
+          className="bff-splash-pulse"
+          style={{
+            position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+            width: 80, height: 80, borderRadius: "50%", overflow: "hidden",
+            boxShadow: "0 0 26px rgba(212,175,55,0.3)",
+          }}
+        >
+          <img src="/logo-160.png" alt="Brotherhood Future Fund" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        </div>
+      </div>
+
+      <div style={{ fontSize: 20, fontWeight: 800, color: "#fff", marginTop: 14, textAlign: "center", padding: "0 24px" }}>
+        Brotherhood Future Fund
+      </div>
+      <div style={{
+        fontSize: 11, letterSpacing: 3, color: "rgba(245,158,11,0.9)", marginTop: 6,
+        textTransform: "uppercase", fontWeight: 700, textAlign: "center",
+      }}>
+        Together • Trust • Grow • Prosper
+      </div>
+      <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 14, textAlign: "center" }}>
+        Reconciling vault ledgers &amp; member statements...
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState("overview");
   const [isAdmin, setIsAdmin] = useState(false);
@@ -435,6 +494,8 @@ export default function App() {
   const [maintenanceExpenses, setMaintenanceExpenses] = useState([]);
   const [bankInterest, setBankInterest] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  const [splashDone, setSplashDone] = useState(false);
+  const [splashFading, setSplashFading] = useState(false);
   const [connError, setConnError] = useState(false);
 
   const [search, setSearch] = useState("");
@@ -516,6 +577,14 @@ export default function App() {
     })();
     return () => { cancelled = true; };
   }, [fetchAll]);
+
+  useEffect(() => {
+    if (loaded) {
+      setSplashFading(true);
+      const t = setTimeout(() => setSplashDone(true), 600);
+      return () => clearTimeout(t);
+    }
+  }, [loaded]);
 
   useEffect(() => {
     const refetch = async () => {
@@ -863,13 +932,11 @@ export default function App() {
     m.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  if (!loaded) {
+  if (!splashDone) {
     return (
       <div style={rootStyle}>
         <GlobalStyle />
-        <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#5b6478" }}>
-          Loading fund data…
-        </div>
+        <SplashScreen fadingOut={splashFading} />
       </div>
     );
   }
@@ -880,18 +947,18 @@ export default function App() {
 
       <div style={{ maxWidth: 480, margin: "0 auto", paddingBottom: 96 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 16px 8px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
             <div style={{
-              width: 46, height: 46, borderRadius: 13,
-              background: "linear-gradient(155deg, #5bb8ff, #2f7fe0)",
+              width: 54, height: 54, borderRadius: "50%",
               display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: "0 0 18px rgba(77,166,255,0.35)",
+              background: "#0b0f18", overflow: "hidden", flexShrink: 0,
+              boxShadow: "0 0 0 2px rgba(212,175,55,0.55), 0 4px 18px rgba(212,175,55,0.28)",
             }}>
-              <Shield size={22} color="#04121f" strokeWidth={2.4} fill="#04121f" />
+              <img src="/logo-96.png" alt="Brotherhood Future Fund" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             </div>
             <div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: "#f4f6fb", letterSpacing: -0.2 }}>Brotherhood Future Fund</div>
-              <div style={{ fontSize: 12.5, color: "#5b6478", marginTop: 1 }}>Sep 2026 — Aug 2027 Cycle</div>
+              <div style={{ fontSize: 19, fontWeight: 800, color: "#f4f6fb", letterSpacing: -0.2, lineHeight: 1.15 }}>Brotherhood Future Fund</div>
+              <div style={{ fontSize: 12.5, color: "#d4af37", marginTop: 3, fontWeight: 600, letterSpacing: 0.3 }}>Sep 2026 — Aug 2027 Cycle</div>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -3647,6 +3714,21 @@ function GlobalStyle() {
         0% { box-shadow: 0 0 0 0 rgba(52,211,153,0.6); }
         70% { box-shadow: 0 0 0 6px rgba(52,211,153,0); }
         100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+      }
+      .bff-splash-pulse {
+        animation: bff-splash-pulse-kf 1.8s ease-in-out infinite;
+      }
+      @keyframes bff-splash-pulse-kf {
+        0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+        50% { transform: translate(-50%, -50%) scale(1.06); opacity: 0.9; }
+      }
+      .bff-splash-spin {
+        transform-origin: 50% 50%;
+        animation: bff-splash-spin-kf 1.4s linear infinite;
+      }
+      @keyframes bff-splash-spin-kf {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
       }
       ::-webkit-scrollbar { height: 6px; width: 6px; }
       ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 999px; }
