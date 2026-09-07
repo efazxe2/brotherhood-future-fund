@@ -123,15 +123,60 @@ function initials(name) {
   return (name || "?").trim().charAt(0).toUpperCase();
 }
 
+// Splits a member's pending balance into "past" (any fund month strictly
+// before the current real-world Bangladesh calendar month) vs "current"
+// (the active month itself), then derives which overdue tier — if any —
+// applies right now. Pure function of members/payments/clock, so it's
+// naturally reactive: it just re-runs on every render.
+function computeOverdueAlert(member, payments, currentMonthKey) {
+  const memberPayments = payments[member.id] || {};
+  const currentIdx = MONTHS.findIndex((mo) => mo.key === currentMonthKey);
+  const cutoffIdx = currentIdx === -1 ? MONTHS.length : currentIdx;
+
+  let pastPendingDue = 0;
+  for (let i = 0; i < cutoffIdx; i++) {
+    const owed = member.shares * rateForMonth(i);
+    const paid = memberPayments[MONTHS[i].key] || 0;
+    pastPendingDue += Math.max(0, owed - paid);
+  }
+
+  let currentMonthPendingDue = 0;
+  if (currentIdx !== -1) {
+    const owed = member.shares * rateForMonth(currentIdx);
+    const paid = memberPayments[currentMonthKey] || 0;
+    currentMonthPendingDue = Math.max(0, owed - paid);
+  }
+
+  const totalPendingDue = pastPendingDue + currentMonthPendingDue;
+  const { day: currentDayBD } = dhakaNowParts();
+
+  // TIER A — heavy carried-over debt: fires immediately on Day 1, no grace period.
+  // TIER B — current month unpaid past the 10th, only when past debt is <= 2000.
+  // totalPendingDue === 0 leaves tier null, which normalizes back to default styling.
+  let tier = null;
+  if (totalPendingDue > 0) {
+    if (pastPendingDue > 2000) tier = "A";
+    else if (currentMonthPendingDue > 0 && currentDayBD > 10) tier = "B";
+  }
+
+  return { pastPendingDue, currentMonthPendingDue, totalPendingDue, tier };
+}
+
 // Ranks members who fully paid *this calendar month's* dues on or before the
 // 10th, by the actual timestamp their payment for that month was recorded.
 // Fresh every month by construction — there's no stored state to reset.
 const MONTHLY_BADGE_ORDER = [
-  { key: "king", label: "The King", emoji: "\u{1F451}", color: "#eab308" },
-  { key: "batman", label: "The Batman", emoji: "\u{1F987}", color: "#a78bfa" },
-  { key: "vampire", label: "The Vampire", emoji: "\u{1F9DB}", color: "#f87171" },
+  { key: "king", label: "The King", emoji: "\u{1F451}",
+    color: "#fcd34d", bg: "rgba(245,158,11,0.2)", border: "rgba(245,158,11,0.4)", bold: true },       // amber-300 text / amber-500 bg+border
+  { key: "batman", label: "The Batman", emoji: "\u{1F987}",
+    color: "#e2e8f0", bg: "rgba(51,65,85,0.4)", border: "rgba(100,116,139,0.4)", bold: true },          // slate-200 text / slate-700 bg, slate-500 border
+  { key: "vampire", label: "The Vampire", emoji: "\u{1F9DB}",
+    color: "#d8b4fe", bg: "rgba(88,28,135,0.3)", border: "rgba(168,85,247,0.4)", bold: true },          // purple-300 text / purple-900 bg, purple-500 border
 ];
-const ON_TIME_CHAMPION_BADGE = { key: "champion", label: "On Time Champion", emoji: "\u{1F977}", color: "#34d399" };
+const ON_TIME_CHAMPION_BADGE = {
+  key: "champion", label: "On Time Champion", emoji: "\u{1F977}",
+  color: "#34d399", bg: "rgba(16,185,129,0.2)", border: "rgba(16,185,129,0.3)",                          // emerald-400 text / emerald-500 bg+border
+};
 
 function computeMonthlyBadges(members, payments, paymentTimestamps, monthKey) {
   const monthIdx = MONTHS.findIndex((mo) => mo.key === monthKey);
@@ -383,6 +428,8 @@ function MemberBadges({ badges, size = "sm" }) {
     <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
       {badges.map((b) => {
         const Icon = b.emoji ? null : (BADGE_ICONS[b.icon] || Trophy);
+        const bg = b.bg || `${b.color}18`;
+        const border = b.border || `${b.color}40`;
         return (
           <span
             key={b.key}
@@ -390,8 +437,9 @@ function MemberBadges({ badges, size = "sm" }) {
             style={{
               display: "inline-flex", alignItems: "center", gap: 4,
               padding: isSmall ? "2px 8px" : "4px 10px", borderRadius: 999,
-              background: `${b.color}18`, border: `1px solid ${b.color}40`,
-              color: b.color, fontSize: isSmall ? 10.5 : 12, fontWeight: 700, whiteSpace: "nowrap",
+              background: bg, border: `1px solid ${border}`,
+              color: b.color, fontSize: isSmall ? 10.5 : 12,
+              fontWeight: b.bold === false ? 600 : 700, whiteSpace: "nowrap",
             }}
           >
             {b.emoji ? (
@@ -691,6 +739,7 @@ export default function App() {
 
   const statsById = {};
   const badgesById = {};
+  const overdueById = {};
   const currentMonthKey = currentMonthKeyDhaka();
   const monthlyBadgesById = computeMonthlyBadges(members, payments, paymentTimestamps, currentMonthKey);
   let collectedPrincipal = 0;
@@ -700,9 +749,21 @@ export default function App() {
   members.forEach((m) => {
     const st = memberStats(m, payments, lateFees, elapsed, penaltyPool, totalShares);
     statsById[m.id] = st;
+    const overdue = computeOverdueAlert(m, payments, currentMonthKey);
+    overdueById[m.id] = overdue;
     const badges = computeMemberBadges(m, members);
     if (monthlyBadgesById[m.id]) badges.push(monthlyBadgesById[m.id]);
-    if (st.dueAlert) badges.push({ key: "due", label: "Due Alert", emoji: "\u26A0\uFE0F", color: "#f87171" });
+    if (overdue.tier === "A") {
+      badges.push({
+        key: "penalty-alert", label: "Penalty Alert", emoji: "\u{1F6A8}",
+        color: "#f87171", bg: "rgba(239,68,68,0.2)", border: "rgba(239,68,68,0.4)", bold: true,
+      });
+    } else if (overdue.tier === "B") {
+      badges.push({
+        key: "due-alert", label: "Due Alert", emoji: "\u26A0\uFE0F",
+        color: "#fcd34d", bg: "rgba(245,158,11,0.2)", border: "rgba(245,158,11,0.4)",
+      });
+    }
     badgesById[m.id] = badges;
     collectedPrincipal += st.paidPrincipal;
     totalPendingDues += st.pendingDue;
@@ -1100,6 +1161,7 @@ export default function App() {
             members={filteredMembers}
             statsById={statsById}
             badgesById={badgesById}
+            overdueById={overdueById}
             search={search}
             setSearch={setSearch}
             isAdmin={isAdmin}
@@ -2960,7 +3022,7 @@ function ConfirmDeleteExpenseModal({ expense, onClose, onConfirm }) {
   );
 }
 
-function MembersTab({ members, statsById, badgesById, search, setSearch, isAdmin, onOpenMember, onAdd, onDelete }) {
+function MembersTab({ members, statsById, badgesById, overdueById, search, setSearch, isAdmin, onOpenMember, onAdd, onDelete }) {
   return (
     <div style={{ padding: "12px 16px 0" }}>
       <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
@@ -2990,12 +3052,33 @@ function MembersTab({ members, statsById, badgesById, search, setSearch, isAdmin
         {members.map((m) => {
           const st = statsById[m.id];
           if (!st) return null;
+
+          // TIER A (heavy carried-over debt) and TIER B (current month overdue
+          // past the 10th) each recompute fresh from overdueById on every
+          // render, so switching month filters or approving a payment updates
+          // this instantly. totalPendingDue === 0 falls through to `tier: null`
+          // and the card below reverts to the plain default look.
+          const overdue = overdueById?.[m.id];
+          const tier = overdue?.tier || null;
+          const pendingAmount = overdue ? overdue.totalPendingDue : st.pendingDue;
+
+          const cardStyle =
+            tier === "A"
+              ? { padding: 16, background: "rgba(69,10,10,0.25)", border: "1px solid rgba(239,68,68,0.4)" }
+              : tier === "B"
+              ? { padding: 16, background: "rgba(69,10,10,0.15)", border: "1px solid rgba(245,158,11,0.3)" }
+              : { padding: 16 };
+
+          const nameColor = tier === "A" ? "#fecaca" : tier === "B" ? "#fde68a" : "#f4f6fb";
+          const pendingColor = tier === "A" ? "#f87171" : tier === "B" ? "#fbbf24" : "#f5b942";
+          const pendingWeight = tier === "A" ? 800 : tier === "B" ? 600 : 700;
+
           return (
-            <div key={m.id} className="bff-card" style={{ padding: 16 }}>
+            <div key={m.id} className="bff-card" style={cardStyle}>
               <div onClick={() => onOpenMember(m)} style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}>
                 <Avatar name={m.name} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: st.dueAlert ? "#f87171" : "#f4f6fb" }}>{m.name}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: nameColor }}>{m.name}</div>
                   <div style={{ fontSize: 12.5, color: "#5b6478", marginTop: 1, marginBottom: badgesById?.[m.id]?.length ? 6 : 0 }}>
                     {m.shares} shares · {st.ownership.toFixed(1)}%
                   </div>
@@ -3011,7 +3094,7 @@ function MembersTab({ members, statsById, badgesById, search, setSearch, isAdmin
                 </div>
                 <div>
                   <div style={{ fontSize: 10.5, letterSpacing: 0.6, color: "#5b6478", fontWeight: 700, textTransform: "uppercase" }}>Pending</div>
-                  <div style={{ fontSize: 17, fontWeight: 700, color: "#f5b942", marginTop: 2 }}>{fmt(st.pendingDue)}</div>
+                  <div style={{ fontSize: 17, fontWeight: pendingWeight, color: pendingColor, marginTop: 2 }}>{fmt(pendingAmount)}</div>
                 </div>
                 {isAdmin ? (
                   <button
