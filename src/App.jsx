@@ -80,11 +80,6 @@ function currentMonthKeyDhaka() {
   return `${year}-${String(month).padStart(2, "0")}`;
 }
 
-// True once we're past the 10th day of the current calendar month, Dhaka time.
-function isPastDueDay10() {
-  return dhakaNowParts().day > 10;
-}
-
 // Given an ISO timestamp and a target "YYYY-MM" month, true if that timestamp
 // (read in Dhaka time) falls on or before the 10th of that month — or in any
 // earlier month entirely (i.e. paid in advance).
@@ -117,7 +112,7 @@ function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShar
   let status = "Pending";
   if (paidPrincipal > 0 && pendingDue === 0) status = "Paid";
   else if (paidPrincipal > 0) status = "Partial";
-  const dueAlert = isPastDueDay10() && pendingDue > 0;
+  const dueAlert = pendingDue > 0;
   return {
     paidPrincipal, expectedDue, pendingDue, lateFee, equity, ownership, status, dueAlert,
     maintenanceFeeOwed, maintenanceFeeCollected,
