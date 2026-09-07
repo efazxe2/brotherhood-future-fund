@@ -63,6 +63,44 @@ function ratesSumUpTo(elapsed) {
   return s;
 }
 
+// Returns the current wall-clock date/time in Dhaka (GMT+6, no DST) as plain
+// numeric parts — independent of the device/server's own timezone.
+function dhakaNowParts() {
+  const shifted = new Date(Date.now() + 6 * 60 * 60 * 1000);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1, // 1-indexed
+    day: shifted.getUTCDate(),
+  };
+}
+
+// "YYYY-MM" for the real-world current month, in Dhaka time — matches MONTHS[].key.
+function currentMonthKeyDhaka() {
+  const { year, month } = dhakaNowParts();
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+// True once we're past the 10th day of the current calendar month, Dhaka time.
+function isPastDueDay10() {
+  return dhakaNowParts().day > 10;
+}
+
+// Given an ISO timestamp and a target "YYYY-MM" month, true if that timestamp
+// (read in Dhaka time) falls on or before the 10th of that month — or in any
+// earlier month entirely (i.e. paid in advance).
+function isOnOrBeforeDay10InMonth(isoTimestamp, monthKey) {
+  if (!isoTimestamp) return false;
+  const d = new Date(isoTimestamp);
+  if (Number.isNaN(d.getTime())) return false;
+  const shifted = new Date(d.getTime() + 6 * 60 * 60 * 1000);
+  const y = shifted.getUTCFullYear();
+  const m = shifted.getUTCMonth() + 1;
+  const day = shifted.getUTCDate();
+  const paymentMonthKey = `${y}-${String(m).padStart(2, "0")}`;
+  if (paymentMonthKey < monthKey) return true;
+  return paymentMonthKey === monthKey && day <= 10;
+}
+
 function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShares) {
   const memberPayments = payments[member.id] || {};
   const paidPrincipal = MONTHS.reduce((sum, m) => sum + (memberPayments[m.key] || 0), 0);
@@ -79,8 +117,9 @@ function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShar
   let status = "Pending";
   if (paidPrincipal > 0 && pendingDue === 0) status = "Paid";
   else if (paidPrincipal > 0) status = "Partial";
+  const dueAlert = isPastDueDay10() && pendingDue > 0;
   return {
-    paidPrincipal, expectedDue, pendingDue, lateFee, equity, ownership, status,
+    paidPrincipal, expectedDue, pendingDue, lateFee, equity, ownership, status, dueAlert,
     maintenanceFeeOwed, maintenanceFeeCollected,
   };
 }
@@ -89,28 +128,43 @@ function initials(name) {
   return (name || "?").trim().charAt(0).toUpperCase();
 }
 
-// True only if this member's cumulative payments never fell short of the
-// cumulative expected amount at any point through the elapsed months —
-// a real month-by-month check, not just "caught up right now."
-function wasAlwaysOnPace(member, payments, elapsed) {
-  const memberPayments = payments[member.id] || {};
-  let cumulativePaid = 0;
-  for (let i = 0; i < elapsed; i++) {
-    cumulativePaid += memberPayments[MONTHS[i].key] || 0;
-    const cumulativeExpected = member.shares * ratesSumUpTo(i + 1);
-    if (cumulativePaid < cumulativeExpected) return false;
-  }
-  return cumulativePaid > 0;
+// Ranks members who fully paid *this calendar month's* dues on or before the
+// 10th, by the actual timestamp their payment for that month was recorded.
+// Fresh every month by construction — there's no stored state to reset.
+const MONTHLY_BADGE_ORDER = [
+  { key: "king", label: "The King", emoji: "\u{1F451}", color: "#eab308" },
+  { key: "batman", label: "The Batman", emoji: "\u{1F987}", color: "#a78bfa" },
+  { key: "vampire", label: "The Vampire", emoji: "\u{1F9DB}", color: "#f87171" },
+];
+const ON_TIME_CHAMPION_BADGE = { key: "champion", label: "On Time Champion", emoji: "\u{1F977}", color: "#34d399" };
+
+function computeMonthlyBadges(members, payments, paymentTimestamps, monthKey) {
+  const monthIdx = MONTHS.findIndex((mo) => mo.key === monthKey);
+  const result = {};
+  if (monthIdx === -1) return result;
+
+  const qualifiers = members
+    .map((m) => {
+      const monthlyDue = m.shares * rateForMonth(monthIdx);
+      const paidForMonth = payments[m.id]?.[monthKey] || 0;
+      const timestamp = paymentTimestamps[m.id]?.[monthKey] || null;
+      const fullyPaid = monthlyDue > 0 && paidForMonth >= monthlyDue;
+      return { id: m.id, fullyPaid, timestamp, qualifies: fullyPaid && isOnOrBeforeDay10InMonth(timestamp, monthKey) };
+    })
+    .filter((x) => x.qualifies)
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  qualifiers.forEach((q, i) => {
+    result[q.id] = MONTHLY_BADGE_ORDER[i] || ON_TIME_CHAMPION_BADGE;
+  });
+  return result;
 }
 
-function computeMemberBadges(member, members, payments, elapsed) {
+function computeMemberBadges(member, members) {
   const badges = [];
   const maxShares = Math.max(...members.map((m) => m.shares));
   if (member.shares === maxShares && maxShares > 0) {
     badges.push({ key: "top", label: "Top Shareholder", icon: "trophy", color: "#eab308" });
-  }
-  if (wasAlwaysOnPace(member, payments, elapsed)) {
-    badges.push({ key: "ontime", label: "On-Time Saver", icon: "check", color: "#34d399" });
   }
   return badges;
 }
@@ -333,7 +387,7 @@ function MemberBadges({ badges, size = "sm" }) {
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
       {badges.map((b) => {
-        const Icon = BADGE_ICONS[b.icon] || Trophy;
+        const Icon = b.emoji ? null : (BADGE_ICONS[b.icon] || Trophy);
         return (
           <span
             key={b.key}
@@ -345,8 +399,11 @@ function MemberBadges({ badges, size = "sm" }) {
               color: b.color, fontSize: isSmall ? 10.5 : 12, fontWeight: 700, whiteSpace: "nowrap",
             }}
           >
-            <Icon size={isSmall ? 10 : 12} />
-            {b.label}
+            {b.emoji ? (
+              <>{b.label} <span style={{ fontSize: isSmall ? 11 : 13, lineHeight: 1 }}>{b.emoji}</span></>
+            ) : (
+              <><Icon size={isSmall ? 10 : 12} /> {b.label}</>
+            )}
           </span>
         );
       })}
@@ -422,70 +479,12 @@ function ModalShell({ onClose, children, align = "center" }) {
 /* App                                                                   */
 /* ------------------------------------------------------------------ */
 
-function SplashScreen({ fadingOut }) {
-  const R = 46;
-  const CIRC = 2 * Math.PI * R;
-  return (
-    <div
-      style={{
-        position: "fixed", inset: 0, zIndex: 500,
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-        background: "rgba(5,7,13,0.94)", backdropFilter: "blur(14px)",
-        opacity: fadingOut ? 0 : 1,
-        transition: "opacity 0.55s ease",
-        pointerEvents: fadingOut ? "none" : "auto",
-      }}
-    >
-      <div style={{ position: "relative", width: 104, height: 104, marginBottom: 4 }}>
-        <svg width="104" height="104" viewBox="0 0 104 104" style={{ position: "absolute", inset: 0 }}>
-          <circle cx="52" cy="52" r={R} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="3.5" />
-          <circle
-            cx="52" cy="52" r={R} fill="none" strokeWidth="3.5" strokeLinecap="round"
-            stroke="url(#bffSplashGradient)"
-            strokeDasharray={CIRC}
-            strokeDashoffset={CIRC * 0.7}
-            className="bff-splash-spin"
-          />
-          <defs>
-            <linearGradient id="bffSplashGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#D4AF37" />
-              <stop offset="100%" stopColor="#10B981" />
-            </linearGradient>
-          </defs>
-        </svg>
-        <div
-          className="bff-splash-pulse"
-          style={{
-            position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
-            width: 80, height: 80, borderRadius: "50%", overflow: "hidden",
-            boxShadow: "0 0 26px rgba(212,175,55,0.3)",
-          }}
-        >
-          <img src="/logo-160.png" alt="Brotherhood Future Fund" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        </div>
-      </div>
-
-      <div style={{ fontSize: 20, fontWeight: 800, color: "#fff", marginTop: 14, textAlign: "center", padding: "0 24px" }}>
-        Brotherhood Future Fund
-      </div>
-      <div style={{
-        fontSize: 11, letterSpacing: 3, color: "rgba(245,158,11,0.9)", marginTop: 6,
-        textTransform: "uppercase", fontWeight: 700, textAlign: "center",
-      }}>
-        Together • Trust • Grow • Prosper
-      </div>
-      <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 14, textAlign: "center" }}>
-        Reconciling vault ledgers &amp; member statements...
-      </div>
-    </div>
-  );
-}
-
 export default function App() {
   const [tab, setTab] = useState("overview");
   const [isAdmin, setIsAdmin] = useState(false);
   const [members, setMembers] = useState([]);
   const [payments, setPayments] = useState({});
+  const [paymentTimestamps, setPaymentTimestamps] = useState({});
   const [receipts, setReceipts] = useState({});
   const [lateFees, setLateFees] = useState({});
   const [notices, setNotices] = useState([]);
@@ -494,8 +493,6 @@ export default function App() {
   const [maintenanceExpenses, setMaintenanceExpenses] = useState([]);
   const [bankInterest, setBankInterest] = useState([]);
   const [loaded, setLoaded] = useState(false);
-  const [splashDone, setSplashDone] = useState(false);
-  const [splashFading, setSplashFading] = useState(false);
   const [connError, setConnError] = useState(false);
 
   const [search, setSearch] = useState("");
@@ -530,10 +527,13 @@ export default function App() {
     setConnError(false);
 
     const paymentsObj = {};
+    const paymentTimestampsObj = {};
     const receiptsObj = {};
     (paymentsRes.data || []).forEach((row) => {
       if (!paymentsObj[row.member_id]) paymentsObj[row.member_id] = {};
       paymentsObj[row.member_id][row.month_key] = Number(row.amount);
+      if (!paymentTimestampsObj[row.member_id]) paymentTimestampsObj[row.member_id] = {};
+      paymentTimestampsObj[row.member_id][row.month_key] = row.updated_at || row.created_at || null;
       if (row.receipt_path) {
         if (!receiptsObj[row.member_id]) receiptsObj[row.member_id] = {};
         receiptsObj[row.member_id][row.month_key] = row.receipt_path;
@@ -548,6 +548,7 @@ export default function App() {
     return {
       members: membersRes.data || [],
       payments: paymentsObj,
+      paymentTimestamps: paymentTimestampsObj,
       receipts: receiptsObj,
       lateFees: lateFeesObj,
       notices: noticesRes.data || [],
@@ -565,6 +566,7 @@ export default function App() {
       if (d && !cancelled) {
         setMembers(d.members);
         setPayments(d.payments);
+        setPaymentTimestamps(d.paymentTimestamps);
         setReceipts(d.receipts);
         setLateFees(d.lateFees);
         setNotices(d.notices);
@@ -579,19 +581,12 @@ export default function App() {
   }, [fetchAll]);
 
   useEffect(() => {
-    if (loaded) {
-      setSplashFading(true);
-      const t = setTimeout(() => setSplashDone(true), 600);
-      return () => clearTimeout(t);
-    }
-  }, [loaded]);
-
-  useEffect(() => {
     const refetch = async () => {
       const d = await fetchAll();
       if (d) {
         setMembers(d.members);
         setPayments(d.payments);
+        setPaymentTimestamps(d.paymentTimestamps);
         setReceipts(d.receipts);
         setLateFees(d.lateFees);
         setNotices(d.notices);
@@ -693,6 +688,8 @@ export default function App() {
 
   const statsById = {};
   const badgesById = {};
+  const currentMonthKey = currentMonthKeyDhaka();
+  const monthlyBadgesById = computeMonthlyBadges(members, payments, paymentTimestamps, currentMonthKey);
   let collectedPrincipal = 0;
   let totalPendingDues = 0;
   let totalMaintenanceFee = 0;
@@ -700,7 +697,10 @@ export default function App() {
   members.forEach((m) => {
     const st = memberStats(m, payments, lateFees, elapsed, penaltyPool, totalShares);
     statsById[m.id] = st;
-    badgesById[m.id] = computeMemberBadges(m, members, payments, elapsed);
+    const badges = computeMemberBadges(m, members);
+    if (monthlyBadgesById[m.id]) badges.push(monthlyBadgesById[m.id]);
+    if (st.dueAlert) badges.push({ key: "due", label: "Due Alert", emoji: "\u26A0\uFE0F", color: "#f87171" });
+    badgesById[m.id] = badges;
     collectedPrincipal += st.paidPrincipal;
     totalPendingDues += st.pendingDue;
     totalMaintenanceFee += st.maintenanceFeeOwed;
@@ -771,7 +771,10 @@ export default function App() {
     const monthInfo = MONTHS.find((mo) => mo.key === monthKey);
     const { error } = await supabase
       .from("payments")
-      .upsert({ member_id: memberId, month_key: monthKey, amount }, { onConflict: "member_id,month_key" });
+      .upsert(
+        { member_id: memberId, month_key: monthKey, amount, updated_at: new Date().toISOString() },
+        { onConflict: "member_id,month_key" }
+      );
     if (error) { showToast("Couldn't save payment"); return; }
     showToast("Payment recorded");
     const name = member ? member.name : "a member";
@@ -909,14 +912,21 @@ export default function App() {
     logActivity(`Shares for ${name}: ${oldShares ?? "?"} → ${shares}`);
   };
 
-  const doAddNotice = async (message, mentionedMemberId) => {
-    const mentioned = mentionedMemberId ? members.find((m) => m.id === mentionedMemberId) : null;
+  const doAddNotice = async (message, mentionedMemberIds) => {
+    const ids = Array.isArray(mentionedMemberIds) ? mentionedMemberIds.filter(Boolean) : [];
+    const mentionedNames = ids
+      .map((id) => members.find((m) => m.id === id)?.name)
+      .filter(Boolean);
     const { error } = await supabase
       .from("notices")
-      .insert({ message, mentioned_member_id: mentionedMemberId || null });
+      .insert({
+        message,
+        mentioned_member_ids: ids.length ? ids : null,
+        mentioned_member_id: ids[0] || null, // kept for backward compatibility with older rows/readers
+      });
     if (error) { showToast("Couldn't post notice"); return; }
     showToast("Notice posted");
-    logActivity(`Posted a notice${mentioned ? ` mentioning ${mentioned.name}` : ""}`);
+    logActivity(`Posted a notice${mentionedNames.length ? ` mentioning ${mentionedNames.join(", ")}` : ""}`);
   };
 
   const doDeleteNotice = async (id) => {
@@ -932,11 +942,13 @@ export default function App() {
     m.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  if (!splashDone) {
+  if (!loaded) {
     return (
       <div style={rootStyle}>
         <GlobalStyle />
-        <SplashScreen fadingOut={splashFading} />
+        <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#5b6478" }}>
+          Loading fund data…
+        </div>
       </div>
     );
   }
@@ -947,18 +959,18 @@ export default function App() {
 
       <div style={{ maxWidth: 480, margin: "0 auto", paddingBottom: 96 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 16px 8px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{
-              width: 54, height: 54, borderRadius: "50%",
+              width: 46, height: 46, borderRadius: 13,
+              background: "linear-gradient(155deg, #5bb8ff, #2f7fe0)",
               display: "flex", alignItems: "center", justifyContent: "center",
-              background: "#0b0f18", overflow: "hidden", flexShrink: 0,
-              boxShadow: "0 0 0 2px rgba(212,175,55,0.55), 0 4px 18px rgba(212,175,55,0.28)",
+              boxShadow: "0 0 18px rgba(77,166,255,0.35)",
             }}>
-              <img src="/logo-96.png" alt="Brotherhood Future Fund" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              <Shield size={22} color="#04121f" strokeWidth={2.4} fill="#04121f" />
             </div>
             <div>
-              <div style={{ fontSize: 19, fontWeight: 800, color: "#f4f6fb", letterSpacing: -0.2, lineHeight: 1.15 }}>Brotherhood Future Fund</div>
-              <div style={{ fontSize: 12.5, color: "#d4af37", marginTop: 3, fontWeight: 600, letterSpacing: 0.3 }}>Sep 2026 — Aug 2027 Cycle</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#f4f6fb", letterSpacing: -0.2 }}>Brotherhood Future Fund</div>
+              <div style={{ fontSize: 12.5, color: "#5b6478", marginTop: 1 }}>Sep 2026 — Aug 2027 Cycle</div>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1176,7 +1188,7 @@ export default function App() {
         <AddNoticeModal
           members={members}
           onClose={() => setModal(null)}
-          onSave={async (message, mentionedId) => { await doAddNotice(message, mentionedId); setModal(null); }}
+          onSave={async (message, mentionedIds) => { await doAddNotice(message, mentionedIds); setModal(null); }}
         />
       )}
       {modal?.type === "confirmDeleteNotice" && (
@@ -1331,7 +1343,10 @@ function OverviewTab({
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {visibleNotices.map((n) => {
-              const mentioned = n.mentioned_member_id ? memberById[n.mentioned_member_id] : null;
+              const mentionedIds = Array.isArray(n.mentioned_member_ids) && n.mentioned_member_ids.length
+                ? n.mentioned_member_ids
+                : (n.mentioned_member_id ? [n.mentioned_member_id] : []);
+              const mentionedMembers = mentionedIds.map((id) => memberById[id]).filter(Boolean);
               return (
                 <div
                   key={n.id}
@@ -1342,15 +1357,19 @@ function OverviewTab({
                 >
                   <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      {mentioned && (
-                        <span style={{
-                          display: "inline-flex", alignItems: "center", gap: 4,
-                          padding: "3px 9px", borderRadius: 999, marginBottom: 7,
-                          background: "rgba(91,184,255,0.12)", border: "1px solid rgba(91,184,255,0.35)",
-                          color: "#5bb8ff", fontSize: 12, fontWeight: 700,
-                        }}>
-                          <AtSign size={11} /> {mentioned.name}
-                        </span>
+                      {mentionedMembers.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 7 }}>
+                          {mentionedMembers.map((mem) => (
+                            <span key={mem.id} style={{
+                              display: "inline-flex", alignItems: "center", gap: 4,
+                              padding: "3px 9px", borderRadius: 999,
+                              background: "rgba(91,184,255,0.12)", border: "1px solid rgba(91,184,255,0.35)",
+                              color: "#5bb8ff", fontSize: 12, fontWeight: 700,
+                            }}>
+                              <AtSign size={11} /> {mem.name}
+                            </span>
+                          ))}
+                        </div>
                       )}
                       <div style={{ fontSize: 14, color: "#e2e6f0", lineHeight: 1.45, wordBreak: "break-word" }}>
                         {n.message}
@@ -1379,16 +1398,18 @@ function OverviewTab({
 
       {/* Stat strip */}
       <div style={{ display: "flex", gap: 10, overflowX: "auto", marginBottom: 14, paddingBottom: 4 }}>
+        <StripStat icon={<Users />} iconBg="rgba(52,211,153,0.14)" iconColor="#34d399"
+          label="Members" value={members.length} sub="Active" />
+        <StripStat icon={<Layers />} iconBg="rgba(168,85,247,0.14)" iconColor="#a78bfa"
+          label="Fund Shares" value={totalShares} sub="Shares" />
+        <StripStat icon={<Wallet />} iconBg="rgba(52,211,153,0.14)" iconColor="#34d399"
+          label="Bank Balance" value={fmt(actualBankBalance)} sub="Actual" highlight />
         <StripStat icon={<TrendingUp />} iconBg="rgba(91,184,255,0.14)" iconColor="#5bb8ff"
           label="Collected" value={fmt(thisMonthCollected)} sub="This Month" />
         <StripStat icon={<Clock />} iconBg="rgba(245,185,66,0.14)" iconColor="#f5b942"
           label="Pending Dues" value={fmt(totalPendingDues)} sub="Across Members" />
-        <StripStat icon={<Calendar />} iconBg="rgba(34,211,238,0.14)" iconColor="#22d3ee"
+        <StripStat icon={<Calendar />} iconBg="rgba(91,184,255,0.14)" iconColor="#5bb8ff"
           label="Active Months" value={elapsed} sub="of 12" />
-        <StripStat icon={<Users />} iconBg="rgba(52,211,153,0.14)" iconColor="#34d399"
-          label="Members" value={members.length} sub="Active" />
-        <StripStat icon={<Layers />} iconBg="rgba(168,85,247,0.14)" iconColor="#a78bfa"
-          label="Fund Shares" value={totalShares} sub="Total Shares" />
       </div>
 
       {/* Actual Bank Balance */}
@@ -2932,7 +2953,7 @@ function MembersTab({ members, statsById, badgesById, search, setSearch, isAdmin
               <div onClick={() => onOpenMember(m)} style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}>
                 <Avatar name={m.name} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: "#f4f6fb" }}>{m.name}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: st.dueAlert ? "#f87171" : "#f4f6fb" }}>{m.name}</div>
                   <div style={{ fontSize: 12.5, color: "#5b6478", marginTop: 1, marginBottom: badgesById?.[m.id]?.length ? 6 : 0 }}>
                     {m.shares} shares · {st.ownership.toFixed(1)}%
                   </div>
@@ -3123,7 +3144,7 @@ function MemberDetailModal({ member, stats, payments, receipts, badges, isAdmin,
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <Avatar name={member.name} size={52} />
             <div>
-              <div style={{ fontSize: 20, fontWeight: 800, color: "#f4f6fb" }}>{member.name}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: stats.dueAlert ? "#f87171" : "#f4f6fb" }}>{member.name}</div>
               <div style={{ fontSize: 13, color: "#5b6478", marginTop: 2, marginBottom: badges?.length ? 7 : 0 }}>{stats.ownership.toFixed(1)}% ownership</div>
               <MemberBadges badges={badges} />
             </div>
@@ -3485,12 +3506,16 @@ function AddMemberModal({ onClose, onSave }) {
 
 function AddNoticeModal({ members, onClose, onSave }) {
   const [message, setMessage] = useState("");
-  const [mentionedId, setMentionedId] = useState("");
+  const [mentionedIds, setMentionedIds] = useState([]);
+
+  const toggleMember = (id) => {
+    setMentionedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
 
   const submit = () => {
     const trimmed = message.trim();
     if (!trimmed) return;
-    onSave(trimmed, mentionedId ? parseInt(mentionedId, 10) : null);
+    onSave(trimmed, mentionedIds);
   };
 
   return (
@@ -3511,17 +3536,29 @@ function AddNoticeModal({ members, onClose, onSave }) {
           style={{ ...inputStyle, marginBottom: 16, resize: "vertical", fontFamily: "inherit" }}
         />
 
-        <label style={labelStyle}>Mention a member (optional)</label>
-        <select
-          value={mentionedId}
-          onChange={(e) => setMentionedId(e.target.value)}
-          style={{ ...inputStyle, marginBottom: 22 }}
-        >
-          <option value="">No one specific</option>
-          {members.map((m) => (
-            <option key={m.id} value={m.id}>{m.name}</option>
-          ))}
-        </select>
+        <label style={labelStyle}>Mention members (optional, select any number)</label>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 22 }}>
+          {members.map((m) => {
+            const active = mentionedIds.includes(m.id);
+            return (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => toggleMember(m.id)}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                  padding: "7px 12px", borderRadius: 999, cursor: "pointer",
+                  background: active ? "rgba(91,184,255,0.16)" : "rgba(255,255,255,0.03)",
+                  border: active ? "1px solid rgba(91,184,255,0.5)" : "1px solid rgba(255,255,255,0.1)",
+                  color: active ? "#5bb8ff" : "#c3cadb", fontSize: 12.5, fontWeight: 700,
+                }}
+              >
+                {active && <Check size={12} />}
+                <AtSign size={11} /> {m.name}
+              </button>
+            );
+          })}
+        </div>
 
         <button onClick={submit} className="bff-primarybtn">Post Notice</button>
       </div>
@@ -3714,21 +3751,6 @@ function GlobalStyle() {
         0% { box-shadow: 0 0 0 0 rgba(52,211,153,0.6); }
         70% { box-shadow: 0 0 0 6px rgba(52,211,153,0); }
         100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
-      }
-      .bff-splash-pulse {
-        animation: bff-splash-pulse-kf 1.8s ease-in-out infinite;
-      }
-      @keyframes bff-splash-pulse-kf {
-        0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
-        50% { transform: translate(-50%, -50%) scale(1.06); opacity: 0.9; }
-      }
-      .bff-splash-spin {
-        transform-origin: 50% 50%;
-        animation: bff-splash-spin-kf 1.4s linear infinite;
-      }
-      @keyframes bff-splash-spin-kf {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
       }
       ::-webkit-scrollbar { height: 6px; width: 6px; }
       ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 999px; }
