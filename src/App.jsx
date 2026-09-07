@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  Shield, Lock, ShieldCheck, AlertTriangle, Clock, Layers, Target,
+  Lock, ShieldCheck, AlertTriangle, Clock, Layers, Target,
   Wallet, Search, UserPlus, Trash2, X, Check, TrendingUp,
   LayoutGrid, Users, Receipt, Pencil, ChevronRight, Activity, KeyRound, Wrench,
   Megaphone, AtSign, Plus, History, Bell, BellOff, Download, Paperclip, Eye,
@@ -488,7 +488,15 @@ export default function App() {
   const [maintenanceExpenses, setMaintenanceExpenses] = useState([]);
   const [bankInterest, setBankInterest] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  const [splashDone, setSplashDone] = useState(false);
   const [connError, setConnError] = useState(false);
+
+  useEffect(() => {
+    if (loaded) {
+      const t = setTimeout(() => setSplashDone(true), 550); // lets the fade-out play before unmount
+      return () => clearTimeout(t);
+    }
+  }, [loaded]);
 
   const [search, setSearch] = useState("");
   const [selectedMember, setSelectedMember] = useState(null);
@@ -937,12 +945,45 @@ export default function App() {
     m.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  if (!loaded) {
+  if (!splashDone) {
     return (
       <div style={rootStyle}>
         <GlobalStyle />
-        <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#5b6478" }}>
-          Loading fund data…
+        <div className={`bff-splash${loaded ? " bff-splash-fade" : ""}`}>
+          <div style={{ position: "relative", width: 96, height: 96 }}>
+            <div style={{
+              position: "absolute", inset: 0, borderRadius: "50%",
+              border: "3px solid rgba(255,255,255,0.08)",
+            }} />
+            <div style={{
+              position: "absolute", inset: 0, borderRadius: "50%",
+              border: "3px solid transparent",
+              borderTopColor: "#D4AF37", borderRightColor: "#10B981",
+              animation: "bff-spin 1s linear infinite",
+            }} />
+            <img
+              src="/logo-160.png"
+              alt="Brotherhood Future Fund"
+              style={{
+                position: "absolute", inset: 10, width: "calc(100% - 20px)", height: "calc(100% - 20px)",
+                borderRadius: "50%", objectFit: "cover",
+                boxShadow: "0 0 24px rgba(212,175,55,0.35)",
+                animation: "bff-logo-pulse 2.2s ease-in-out infinite",
+              }}
+            />
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: "#ffffff", marginTop: 22 }}>
+            Brotherhood Future Fund
+          </div>
+          <div style={{
+            fontSize: 11, fontWeight: 700, letterSpacing: 2.5, textTransform: "uppercase",
+            color: "rgba(251,191,36,0.9)", marginTop: 6,
+          }}>
+            Together • Trust • Grow • Prosper
+          </div>
+          <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 14 }}>
+            Reconciling Vault Ledgers &amp; Member Statements…
+          </div>
         </div>
       </div>
     );
@@ -955,16 +996,22 @@ export default function App() {
       <div style={{ maxWidth: 480, margin: "0 auto", paddingBottom: 96 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 16px 8px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{
-              width: 46, height: 46, borderRadius: 13,
-              background: "linear-gradient(155deg, #5bb8ff, #2f7fe0)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: "0 0 18px rgba(77,166,255,0.35)",
-            }}>
-              <Shield size={22} color="#04121f" strokeWidth={2.4} fill="#04121f" />
-            </div>
+            <img
+              src="/logo-96.png"
+              alt="Brotherhood Future Fund"
+              style={{
+                width: 48, height: 48, borderRadius: "50%", flexShrink: 0,
+                boxShadow: "0 0 16px rgba(212,175,55,0.35), 0 0 0 1px rgba(212,175,55,0.25)",
+              }}
+            />
             <div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: "#f4f6fb", letterSpacing: -0.2 }}>Brotherhood Future Fund</div>
+              <div style={{
+                fontSize: 18.5, fontWeight: 800, letterSpacing: -0.2,
+                backgroundImage: "linear-gradient(135deg, #f4f6fb 35%, #D4AF37 100%)",
+                WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
+              }}>
+                Brotherhood Future Fund
+              </div>
               <div style={{ fontSize: 12.5, color: "#5b6478", marginTop: 1 }}>Sep 2026 — Aug 2027 Cycle</div>
             </div>
           </div>
@@ -3749,6 +3796,24 @@ function GlobalStyle() {
       }
       ::-webkit-scrollbar { height: 6px; width: 6px; }
       ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 999px; }
+      .bff-splash {
+        height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+        text-align: center; padding: 24px;
+        background:
+          radial-gradient(circle at 50% 32%, rgba(212,175,55,0.10), transparent 55%),
+          radial-gradient(circle at 50% 70%, rgba(16,185,129,0.06), transparent 55%),
+          #05070d;
+        opacity: 1;
+        transition: opacity 0.5s ease;
+      }
+      .bff-splash-fade { opacity: 0; }
+      @keyframes bff-spin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes bff-logo-pulse {
+        0%, 100% { transform: scale(1); opacity: 1; }
+        50% { transform: scale(1.045); opacity: 0.88; }
+      }
     `}</style>
   );
 }
