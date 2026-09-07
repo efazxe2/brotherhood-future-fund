@@ -3054,21 +3054,29 @@ function MembersTab({ members, statsById, badgesById, overdueById, search, setSe
           // TIER A (heavy carried-over debt) and TIER B (current month overdue
           // past the 10th) each recompute fresh from overdueById on every
           // render, so switching month filters or approving a payment updates
-          // this instantly. totalPendingDue === 0 falls through to `tier: null`
-          // and the card below reverts to the plain default look.
+          // this instantly. totalPendingDue === 0 falls through to `tier: null`,
+          // and a fully-cleared active month then gets the emerald "paid" glow
+          // instead of the plain default look — also instant, since it's read
+          // straight off st.status which is recomputed on every render too.
           const overdue = overdueById?.[m.id];
           const tier = overdue?.tier || null;
           const pendingAmount = overdue ? overdue.totalPendingDue : st.pendingDue;
+          const isFullyPaid = tier === null && st.status === "Paid";
 
           const cardStyle =
             tier === "A"
               ? { padding: 16, background: "rgba(69,10,10,0.25)", border: "1px solid rgba(239,68,68,0.4)" }
               : tier === "B"
               ? { padding: 16, background: "rgba(69,10,10,0.15)", border: "1px solid rgba(245,158,11,0.3)" }
-              : { padding: 16 };
+              : isFullyPaid
+              ? {
+                  padding: 16, background: "rgba(2,44,34,0.1)", border: "1px solid rgba(16,185,129,0.5)",
+                  boxShadow: "0 0 15px rgba(16,185,129,0.15)",
+                }
+              : { padding: 16, background: "rgba(15,23,42,0.4)", border: "1px solid rgba(30,41,59,0.8)" };
 
           const nameColor = tier === "A" ? "#fecaca" : tier === "B" ? "#fde68a" : "#f4f6fb";
-          const pendingColor = tier === "A" ? "#f87171" : tier === "B" ? "#fbbf24" : "#f5b942";
+          const pendingColor = tier === "A" ? "#f87171" : tier === "B" ? "#fbbf24" : isFullyPaid ? "#34d399" : "#f5b942";
           const pendingWeight = tier === "A" ? 800 : tier === "B" ? 600 : 700;
 
           return (
