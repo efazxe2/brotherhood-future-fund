@@ -48,13 +48,24 @@ const rateForMonth = (idx) => (idx === 0 ? BASE_RATE + SEP_MAINTENANCE : BASE_RA
 const fmt = (n) => "\u09F3" + Math.round(n || 0).toLocaleString("en-US");
 const fmtSigned = (n) => (n < 0 ? "-" : "") + fmt(Math.abs(n));
 
-function computeElapsedMonths(members, payments) {
-  for (let i = MONTHS.length - 1; i >= 0; i--) {
-    const key = MONTHS[i].key;
-    const any = members.some((m) => (payments[m.id]?.[key] || 0) > 0);
-    if (any) return i + 1;
+// Elapsed = how many months of the cycle have actually begun, per Dhaka's
+// real-world calendar. This used to be inferred from "has anyone paid into
+// this month yet" — which meant a single member's advance payment (e.g.
+// paying October's amount while it's still September) instantly dragged
+// EVERY member's expected/pending due forward to include October, even
+// though October hadn't started for anyone else. Deriving it purely from
+// today's real date instead means an advance payment only credits the
+// member who made it; it never opens the next month early for anyone else.
+function computeElapsedMonths() {
+  const { year, month } = dhakaNowParts();
+  const key = `${year}-${String(month).padStart(2, "0")}`;
+  const idx = MONTHS.findIndex((m) => m.key === key);
+  if (idx === -1) {
+    // Before the cycle's first month: nothing is active yet.
+    // After the cycle's last month: treat the whole cycle as elapsed.
+    return key < MONTHS[0].key ? 0 : MONTHS.length;
   }
-  return 1;
+  return idx + 1;
 }
 
 function ratesSumUpTo(elapsed) {
@@ -100,7 +111,19 @@ function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShar
   const memberPayments = payments[member.id] || {};
   const paidPrincipal = MONTHS.reduce((sum, m) => sum + (memberPayments[m.key] || 0), 0);
   const expectedDue = member.shares * ratesSumUpTo(elapsed);
-  const pendingDue = Math.max(0, expectedDue - paidPrincipal);
+  // Month-by-month, not a lump "total expected minus total paid" diff: each
+  // active month's shortfall is clamped at 0 on its own before being added
+  // up, so a payment recorded against one month (e.g. an October advance)
+  // can never be mistaken for covering a different, still-unpaid month
+  // (e.g. September). This is the same per-month logic computeOverdueAlert
+  // already uses for the tier badges — now it's the single source of truth
+  // for the due amount too, not just the alert tier.
+  let pendingDue = 0;
+  for (let i = 0; i < elapsed; i++) {
+    const owed = member.shares * rateForMonth(i);
+    const paid = memberPayments[MONTHS[i].key] || 0;
+    pendingDue += Math.max(0, owed - paid);
+  }
   const lateFee = lateFees[member.id] || 0;
 
   const maintenanceFeeOwed = member.shares * SEP_MAINTENANCE;
@@ -734,7 +757,7 @@ export default function App() {
   const totalShares = members.reduce((s, m) => s + m.shares, 0) || TOTAL_SHARES_FALLBACK;
   const yearlyTarget = totalShares * 12 * BASE_RATE + totalShares * SEP_MAINTENANCE;
 
-  const elapsed = computeElapsedMonths(members, payments);
+  const elapsed = computeElapsedMonths();
   const penaltyPool = Object.values(lateFees).reduce((s, v) => s + (v || 0), 0);
 
   const statsById = {};
@@ -3060,7 +3083,14 @@ function MembersTab({ members, statsById, badgesById, overdueById, search, setSe
           // straight off st.status which is recomputed on every render too.
           const overdue = overdueById?.[m.id];
           const tier = overdue?.tier || null;
-          const pendingAmount = overdue ? overdue.totalPendingDue : st.pendingDue;
+          // Always the same figure shown on the Member Detail page and the PDF
+          // statement (memberStats.pendingDue). `overdue` is only consulted for
+          // the day-10 grace-period tier styling below, never for the amount —
+          // it used to be picked here too, but `overdue` is never null/undefined
+          // (computeOverdueAlert always returns an object), so that branch of
+          // the old ternary was dead code and the two screens could silently
+          // disagree about the same member's pending amount.
+          const pendingAmount = st.pendingDue;
           const isFullyPaid = tier === null && st.status === "Paid";
 
           const cardStyle =
