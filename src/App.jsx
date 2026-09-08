@@ -1220,6 +1220,8 @@ export default function App() {
             onSaveGoldRate={doSaveGoldRate}
           />
         )}
+
+        <AppFooter />
       </div>
 
       <div style={navWrapStyle}>
@@ -3799,6 +3801,27 @@ function EditNumberModal({ title, label, initial, onClose, onSave, allowClear })
         </div>
       </div>
     </ModalShell>
+  );
+}
+
+function AppFooter() {
+  return (
+    <div
+      style={{
+        textAlign: "center",
+        marginTop: 28,
+        paddingTop: 16,
+        paddingBottom: 8,
+        borderTop: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>
+        © 2026 Brotherhood Future Fund. All rights reserved.
+      </div>
+      <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.6 }}>
+        Designed &amp; Developed by Shazzad Hossain Efaz
+      </div>
+    </div>
   );
 }
 
