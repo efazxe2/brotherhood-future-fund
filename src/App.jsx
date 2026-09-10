@@ -91,6 +91,22 @@ function currentMonthKeyDhaka() {
   return `${year}-${String(month).padStart(2, "0")}`;
 }
 
+// "YYYY-MM", in Dhaka time, for whenever a payments row was actually written —
+// i.e. the real calendar month the cash was physically received. This is
+// deliberately independent of month_key (which due-month that row's balance
+// settles): a lump sum paid on Oct 9th that clears a leftover September debt
+// still has month_key "2026-09" for the settled portion, but its updated_at
+// is Oct 9th — this function reads the latter, so "how much came in this
+// calendar month" doesn't get bucketed into a past due-month just because
+// that's what the money was credited toward.
+function dhakaMonthKeyFromTimestamp(isoTimestamp) {
+  if (!isoTimestamp) return null;
+  const d = new Date(isoTimestamp);
+  if (Number.isNaN(d.getTime())) return null;
+  const shifted = new Date(d.getTime() + 6 * 60 * 60 * 1000);
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
 // Given an ISO timestamp and a target "YYYY-MM" month, true if that timestamp
 // (read in Dhaka time) falls on or before the 10th of that month — or in any
 // earlier month entirely (i.e. paid in advance).
@@ -140,6 +156,43 @@ function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShar
     paidPrincipal, expectedDue, pendingDue, lateFee, equity, ownership, status, dueAlert,
     maintenanceFeeOwed, maintenanceFeeCollected,
   };
+}
+
+// Strict FIFO debt waterfall: given a lump sum a member just paid, decide
+// which month(s) it actually settles. It walks the member's months oldest
+// first (September before October, etc.) and only tops up a month once
+// every earlier month's shortfall is fully covered — mirroring exactly how
+// computeOverdueAlert/memberStats already read "pastPendingDue" oldest-first.
+// Any leftover after every month through the target is fully settled lands
+// in the target month itself (or, if the target was already clear, in the
+// very next month), which is what makes an advance payment like paying
+// October ahead of time work with zero special-casing.
+// Returns a map of ONLY the month keys whose stored total actually changes.
+function allocatePaymentFIFO(member, existingPayments, elapsed, targetMonthKey, incomingAmount) {
+  const targetIdx = MONTHS.findIndex((mo) => mo.key === targetMonthKey);
+  const lastIdx = Math.max(elapsed - 1, targetIdx, 0);
+
+  let remaining = incomingAmount;
+  const changes = {};
+
+  for (let i = 0; i <= lastIdx; i++) {
+    if (remaining <= 0) break;
+    const monthKey = MONTHS[i].key;
+    const owed = member.shares * rateForMonth(i);
+    const currentlyPaid = existingPayments[monthKey] || 0;
+    const shortfall = Math.max(0, owed - currentlyPaid);
+    if (shortfall <= 0) continue;
+    const applied = Math.min(shortfall, remaining);
+    changes[monthKey] = currentlyPaid + applied;
+    remaining -= applied;
+  }
+
+  if (remaining > 0) {
+    const base = changes[targetMonthKey] ?? (existingPayments[targetMonthKey] || 0);
+    changes[targetMonthKey] = base + remaining;
+  }
+
+  return changes;
 }
 
 function initials(name) {
@@ -420,13 +473,19 @@ function findLatestRate(sortedRates, purityKey) {
 /* Small UI atoms                                                       */
 /* ------------------------------------------------------------------ */
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, tier }) {
   const map = {
     Paid: { bg: "rgba(52,211,153,0.12)", border: "rgba(52,211,153,0.35)", color: "#34d399" },
     Partial: { bg: "rgba(245,185,66,0.12)", border: "rgba(245,185,66,0.35)", color: "#f5b942" },
     Pending: { bg: "rgba(139,147,167,0.12)", border: "rgba(139,147,167,0.3)", color: "#9aa3b8" },
   };
-  const s = map[status] || map.Pending;
+  // Overdue always wins over the plain Paid/Partial/Pending palette — never
+  // show a green or amber badge on a card that's flagged red/rose above it.
+  const overdueMap = {
+    A: { bg: "rgba(69,10,10,0.2)", border: "rgba(239,68,68,0.4)", color: "#f87171" },
+    B: { bg: "rgba(76,5,25,0.15)", border: "rgba(244,63,94,0.35)", color: "#fb7185" },
+  };
+  const s = overdueMap[tier] || map[status] || map.Pending;
   return (
     <span
       style={{
@@ -784,7 +843,7 @@ export default function App() {
     } else if (overdue.tier === "B") {
       badges.push({
         key: "due-alert", label: "Due Alert", emoji: "\u26A0\uFE0F",
-        color: "#fcd34d", bg: "rgba(245,158,11,0.2)", border: "rgba(245,158,11,0.4)",
+        color: "#fb7185", bg: "rgba(244,63,94,0.15)", border: "rgba(244,63,94,0.35)",
       });
     }
     badgesById[m.id] = badges;
@@ -796,9 +855,27 @@ export default function App() {
   const remainingDues = Math.max(0, yearlyTarget - collectedPrincipal);
   const progressPct = Math.min(100, (collectedPrincipal / yearlyTarget) * 100);
 
+  // `value` = how much is credited toward each due-month (drives progress-
+  // toward-target charts). `receivedValue` = how much cash actually landed
+  // in that real calendar month, based on each row's own updated_at — used
+  // for "Collected This Month" and the Payment Pulse chart, so a lump sum
+  // that settles an old, past-due month doesn't get reported as if it had
+  // arrived back in that earlier month.
+  const monthlyReceivedTotals = {};
+  members.forEach((m) => {
+    const memberPayments = payments[m.id] || {};
+    const memberTimestamps = paymentTimestamps[m.id] || {};
+    Object.keys(memberPayments).forEach((monthKey) => {
+      const amount = memberPayments[monthKey] || 0;
+      if (amount <= 0) return;
+      const receivedKey = dhakaMonthKeyFromTimestamp(memberTimestamps[monthKey]) || monthKey;
+      monthlyReceivedTotals[receivedKey] = (monthlyReceivedTotals[receivedKey] || 0) + amount;
+    });
+  });
+
   const monthlyTotals = MONTHS.map((mo) => {
     const total = members.reduce((s, m) => s + (payments[m.id]?.[mo.key] || 0), 0);
-    return { name: mo.label, value: total };
+    return { name: mo.label, value: total, receivedValue: monthlyReceivedTotals[mo.key] || 0 };
   });
 
   const exportMembersCSV = () => {
@@ -871,6 +948,50 @@ export default function App() {
     } else {
       logActivity(`Cleared ${monthLabel} payment for ${name}`);
     }
+  };
+
+  // Used by the "Record Payment" modal. The amount entered is money the
+  // member actually handed over today — not a direct overwrite of whichever
+  // cell was clicked. It's run through the FIFO waterfall first (oldest
+  // unpaid month settled before anything rolls into the clicked month), then
+  // every month that changed is written and summarized in one activity line.
+  // Clearing a cell (amount === 0) bypasses the waterfall entirely — that's
+  // a correction, not a new payment, so it only ever touches the one month.
+  const doRecordPaymentFIFO = async (memberId, targetMonthKey, amount) => {
+    const member = members.find((m) => m.id === memberId);
+    if (!member) { showToast("Couldn't save payment"); return; }
+
+    if (amount <= 0) {
+      await doSetPayment(memberId, targetMonthKey, amount);
+      return;
+    }
+
+    const existing = payments[memberId] || {};
+    const changes = allocatePaymentFIFO(member, existing, elapsed, targetMonthKey, amount);
+    const changedKeys = Object.keys(changes);
+    if (changedKeys.length === 0) return;
+
+    for (const monthKey of changedKeys) {
+      const { error } = await supabase
+        .from("payments")
+        .upsert(
+          { member_id: memberId, month_key: monthKey, amount: changes[monthKey], updated_at: new Date().toISOString() },
+          { onConflict: "member_id,month_key" }
+        );
+      if (error) { showToast("Couldn't save payment"); return; }
+    }
+
+    showToast("Payment recorded");
+    const breakdown = changedKeys
+      .sort((a, b) => MONTHS.findIndex((mo) => mo.key === a) - MONTHS.findIndex((mo) => mo.key === b))
+      .map((monthKey) => {
+        const monthInfo = MONTHS.find((mo) => mo.key === monthKey);
+        const label = monthInfo ? `${monthInfo.label} ${monthInfo.year}` : monthKey;
+        const added = changes[monthKey] - (existing[monthKey] || 0);
+        return `${label} +${fmt(added)}`;
+      })
+      .join(", ");
+    logActivity(`Recorded ${fmt(amount)} for ${member.name} — ${breakdown} (oldest dues first)`);
   };
 
   const doUploadReceipt = async (member, monthKey, file) => {
@@ -1238,6 +1359,7 @@ export default function App() {
         <MemberDetailModal
           member={selectedMember}
           stats={statsById[selectedMember.id]}
+          tier={overdueById[selectedMember.id]?.tier || null}
           payments={payments[selectedMember.id] || {}}
           receipts={receipts[selectedMember.id] || {}}
           badges={badgesById[selectedMember.id]}
@@ -1329,12 +1451,18 @@ export default function App() {
       {modal?.type === "editPayment" && (
         <EditNumberModal
           title="Record Payment"
-          label={`${modal.payload.member.name} — ${modal.payload.month.label} ${modal.payload.month.year}`}
-          initial={payments[modal.payload.member.id]?.[modal.payload.month.key] || 0}
+          label={(() => {
+            const existing = payments[modal.payload.member.id]?.[modal.payload.month.key] || 0;
+            const base = `${modal.payload.member.name} — ${modal.payload.month.label} ${modal.payload.month.year}`;
+            return existing > 0
+              ? `${base} (currently ${fmt(existing)} recorded — enter the NEW amount received; oldest unpaid month gets settled first)`
+              : `${base} — amount received now (oldest unpaid month gets settled first)`;
+          })()}
+          initial={0}
           allowClear
           onClose={() => setModal(null)}
           onSave={async (val) => {
-            await doSetPayment(modal.payload.member.id, modal.payload.month.key, val);
+            await doRecordPaymentFIFO(modal.payload.member.id, modal.payload.month.key, val);
             setModal(null);
           }}
         />
@@ -1436,7 +1564,7 @@ function OverviewTab({
   const totalMaintenanceSpent = maintenanceExpenses.reduce((s, e) => s + Number(e.amount), 0);
   const totalInterest = bankInterest.reduce((s, i) => s + Number(i.amount), 0);
   const actualBankBalance = (collectedPrincipal + totalInterest) - totalMaintenanceSpent;
-  const thisMonthCollected = monthlyTotals[Math.max(0, elapsed - 1)]?.value || 0;
+  const thisMonthCollected = monthlyTotals[Math.max(0, elapsed - 1)]?.receivedValue || 0;
   const visibleNotices = showAllNotices ? notices : notices.slice(0, 2);
 
   return (
@@ -1593,7 +1721,7 @@ function OverviewTab({
                 contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 12 }}
                 labelStyle={{ color: "#8b93a7" }}
               />
-              <Area type="monotone" dataKey="value" stroke="#5bb8ff" strokeWidth={2} fill="url(#pulseFill)" />
+              <Area type="monotone" dataKey="receivedValue" stroke="#5bb8ff" strokeWidth={2} fill="url(#pulseFill)" />
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -3099,7 +3227,7 @@ function MembersTab({ members, statsById, badgesById, overdueById, search, setSe
             tier === "A"
               ? { padding: 16, background: "rgba(69,10,10,0.25)", border: "1px solid rgba(239,68,68,0.4)" }
               : tier === "B"
-              ? { padding: 16, background: "rgba(69,10,10,0.15)", border: "1px solid rgba(245,158,11,0.3)" }
+              ? { padding: 16, background: "rgba(69,10,10,0.15)", border: "1px solid rgba(244,63,94,0.35)" }
               : isFullyPaid
               ? {
                   padding: 16, background: "rgba(2,44,34,0.1)", border: "1px solid rgba(16,185,129,0.5)",
@@ -3107,8 +3235,12 @@ function MembersTab({ members, statsById, badgesById, overdueById, search, setSe
                 }
               : { padding: 16, background: "rgba(15,23,42,0.4)", border: "1px solid rgba(30,41,59,0.8)" };
 
-          const nameColor = tier === "A" ? "#fecaca" : tier === "B" ? "#fde68a" : "#f4f6fb";
-          const pendingColor = tier === "A" ? "#f87171" : tier === "B" ? "#fbbf24" : isFullyPaid ? "#34d399" : "#f5b942";
+          // Both overdue tiers render the member name in red-300 — never
+          // yellow/amber — so "this person owes money" reads as unmistakably
+          // distinct from the gold/purple/amber tones used for achievement
+          // badges elsewhere on the same card.
+          const nameColor = tier ? "#fca5a5" : "#f4f6fb";
+          const pendingColor = tier === "A" ? "#f87171" : tier === "B" ? "#fb7185" : isFullyPaid ? "#34d399" : "#f5b942";
           const pendingWeight = tier === "A" ? 800 : tier === "B" ? 600 : 700;
 
           return (
@@ -3122,7 +3254,7 @@ function MembersTab({ members, statsById, badgesById, overdueById, search, setSe
                   </div>
                   <MemberBadges badges={badgesById?.[m.id]} />
                 </div>
-                <StatusBadge status={st.status} />
+                <StatusBadge status={st.status} tier={tier} />
               </div>
               <div style={{ height: 1, background: "rgba(255,255,255,0.06)", margin: "14px 0" }} />
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -3299,7 +3431,7 @@ function ActivityTab({ activityLog }) {
   );
 }
 
-function MemberDetailModal({ member, stats, payments, receipts, badges, isAdmin, onClose, onEditLateFee, onEditShares, onEditMonth, onUploadReceipt, onRemoveReceipt }) {
+function MemberDetailModal({ member, stats, tier, payments, receipts, badges, isAdmin, onClose, onEditLateFee, onEditShares, onEditMonth, onUploadReceipt, onRemoveReceipt }) {
   return (
     <ModalShell onClose={onClose} align="bottom">
       <div style={{ padding: "22px 20px 28px" }}>
@@ -3307,7 +3439,7 @@ function MemberDetailModal({ member, stats, payments, receipts, badges, isAdmin,
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <Avatar name={member.name} size={52} />
             <div>
-              <div style={{ fontSize: 20, fontWeight: 800, color: stats.dueAlert ? "#f87171" : "#f4f6fb" }}>{member.name}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: tier ? "#fca5a5" : "#f4f6fb" }}>{member.name}</div>
               <div style={{ fontSize: 13, color: "#5b6478", marginTop: 2, marginBottom: badges?.length ? 7 : 0 }}>{stats.ownership.toFixed(1)}% ownership</div>
               <MemberBadges badges={badges} />
             </div>
