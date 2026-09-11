@@ -610,6 +610,7 @@ export default function App() {
   const [members, setMembers] = useState([]);
   const [payments, setPayments] = useState({});
   const [paymentTimestamps, setPaymentTimestamps] = useState({});
+  const [transactions, setTransactions] = useState([]);
   const [receipts, setReceipts] = useState({});
   const [lateFees, setLateFees] = useState({});
   const [notices, setNotices] = useState([]);
@@ -659,6 +660,14 @@ export default function App() {
     }
     setConnError(false);
 
+    // Fetched separately and non-fatally: if the payment_transactions table
+    // hasn't been created yet (migration not run), the rest of the app keeps
+    // working exactly as before instead of showing a connection error.
+    const transactionsRes = await supabase
+      .from("payment_transactions")
+      .select("*")
+      .order("received_at", { ascending: true });
+
     const paymentsObj = {};
     const paymentTimestampsObj = {};
     const receiptsObj = {};
@@ -682,6 +691,7 @@ export default function App() {
       members: membersRes.data || [],
       payments: paymentsObj,
       paymentTimestamps: paymentTimestampsObj,
+      transactions: transactionsRes.error ? [] : transactionsRes.data || [],
       receipts: receiptsObj,
       lateFees: lateFeesObj,
       notices: noticesRes.data || [],
@@ -692,6 +702,7 @@ export default function App() {
     };
   }, []);
 
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -700,6 +711,7 @@ export default function App() {
         setMembers(d.members);
         setPayments(d.payments);
         setPaymentTimestamps(d.paymentTimestamps);
+        setTransactions(d.transactions);
         setReceipts(d.receipts);
         setLateFees(d.lateFees);
         setNotices(d.notices);
@@ -720,6 +732,7 @@ export default function App() {
         setMembers(d.members);
         setPayments(d.payments);
         setPaymentTimestamps(d.paymentTimestamps);
+        setTransactions(d.transactions);
         setReceipts(d.receipts);
         setLateFees(d.lateFees);
         setNotices(d.notices);
@@ -734,6 +747,7 @@ export default function App() {
       .channel("bff-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "members" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "payments" }, refetch)
+      .on("postgres_changes", { event: "*", schema: "public", table: "payment_transactions" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "late_fees" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "notices" }, refetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "activity_log" }, refetch)
@@ -857,21 +871,35 @@ export default function App() {
 
   // `value` = how much is credited toward each due-month (drives progress-
   // toward-target charts). `receivedValue` = how much cash actually landed
-  // in that real calendar month, based on each row's own updated_at — used
-  // for "Collected This Month" and the Payment Pulse chart, so a lump sum
-  // that settles an old, past-due month doesn't get reported as if it had
-  // arrived back in that earlier month.
+  // in that real calendar month — used for "Collected This Month" and the
+  // Payment Pulse chart, so a lump sum that settles an old, past-due month
+  // doesn't get reported as if it had arrived back in that earlier month.
+  //
+  // Precise source: the payment_transactions log (one immutable row per
+  // real deposit, keyed by when it actually happened). Falls back to the
+  // older updated_at-on-the-due-row heuristic only when there's no
+  // transaction data at all yet — e.g. right after the migration is applied
+  // and before it's been backfilled, or before any payment has been
+  // recorded through the FIFO flow.
   const monthlyReceivedTotals = {};
-  members.forEach((m) => {
-    const memberPayments = payments[m.id] || {};
-    const memberTimestamps = paymentTimestamps[m.id] || {};
-    Object.keys(memberPayments).forEach((monthKey) => {
-      const amount = memberPayments[monthKey] || 0;
-      if (amount <= 0) return;
-      const receivedKey = dhakaMonthKeyFromTimestamp(memberTimestamps[monthKey]) || monthKey;
-      monthlyReceivedTotals[receivedKey] = (monthlyReceivedTotals[receivedKey] || 0) + amount;
+  if (transactions.length > 0) {
+    transactions.forEach((t) => {
+      const receivedKey = dhakaMonthKeyFromTimestamp(t.received_at);
+      if (!receivedKey) return;
+      monthlyReceivedTotals[receivedKey] = (monthlyReceivedTotals[receivedKey] || 0) + Number(t.amount);
     });
-  });
+  } else {
+    members.forEach((m) => {
+      const memberPayments = payments[m.id] || {};
+      const memberTimestamps = paymentTimestamps[m.id] || {};
+      Object.keys(memberPayments).forEach((monthKey) => {
+        const amount = memberPayments[monthKey] || 0;
+        if (amount <= 0) return;
+        const receivedKey = dhakaMonthKeyFromTimestamp(memberTimestamps[monthKey]) || monthKey;
+        monthlyReceivedTotals[receivedKey] = (monthlyReceivedTotals[receivedKey] || 0) + amount;
+      });
+    });
+  }
 
   const monthlyTotals = MONTHS.map((mo) => {
     const total = members.reduce((s, m) => s + (payments[m.id]?.[mo.key] || 0), 0);
@@ -991,6 +1019,23 @@ export default function App() {
         return `${label} +${fmt(added)}`;
       })
       .join(", ");
+
+    // One row per real deposit, independent of how many due-months it ended
+    // up settling. This is the precise record of "when did cash actually
+    // arrive" that monthlyReceivedTotals below reads from — unlike a single
+    // payments row's updated_at, this never gets overwritten by a later,
+    // unrelated top-up of the same due-month.
+    const receivedAt = new Date().toISOString();
+    const { error: txnError } = await supabase
+      .from("payment_transactions")
+      .insert({ member_id: memberId, amount, received_at: receivedAt, note: breakdown });
+    if (txnError) {
+      // Non-fatal: the due-ledger (what matters for pendingDue/badges) is
+      // already saved above. Only the "Collected This Month" cash-flow
+      // figure would fall back to the less precise updated_at heuristic.
+      console.error("payment_transactions insert failed", txnError);
+    }
+
     logActivity(`Recorded ${fmt(amount)} for ${member.name} — ${breakdown} (oldest dues first)`);
   };
 
