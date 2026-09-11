@@ -457,22 +457,20 @@ function findLatestRate(sortedRates, purityKey) {
 /* Small UI atoms                                                       */
 /* ------------------------------------------------------------------ */
 
-function StatusBadge({ status, tier }) {
+function StatusBadge({ status }) {
   const map = {
     Paid: { bg: "rgba(52,211,153,0.12)", border: "rgba(52,211,153,0.35)", color: "#34d399" },
     // Partial and Pending share the same amber/yellow tokens (text-amber-400,
     // border-amber-500/30, bg-amber-950/20) — the badge label itself already
-    // distinguishes the two states.
+    // distinguishes the two states. This pill always shows this palette, even
+    // on an overdue card — the red Due Alert/Penalty Alert badge, card
+    // border, and pending amount are what carry the overdue signal; this
+    // pill's job is just Paid/Partial/Pending, kept visually distinct from
+    // that red family on purpose.
     Partial: { bg: "rgba(69,26,3,0.2)", border: "rgba(245,158,11,0.3)", color: "#fbbf24" },
     Pending: { bg: "rgba(69,26,3,0.2)", border: "rgba(245,158,11,0.3)", color: "#fbbf24" },
   };
-  // Overdue always wins over the plain Paid/Partial/Pending palette — never
-  // show a green or amber badge on a card that's flagged red/rose above it.
-  const overdueMap = {
-    A: { bg: "rgba(69,10,10,0.2)", border: "rgba(239,68,68,0.4)", color: "#f87171" },
-    B: { bg: "rgba(76,5,25,0.15)", border: "rgba(244,63,94,0.35)", color: "#fb7185" },
-  };
-  const s = overdueMap[tier] || map[status] || map.Pending;
+  const s = map[status] || map.Pending;
   return (
     <span
       style={{
@@ -3232,7 +3230,7 @@ function MembersTab({ members, statsById, badgesById, overdueById, search, setSe
                   </div>
                   <MemberBadges badges={badgesById?.[m.id]} />
                 </div>
-                <StatusBadge status={st.status} tier={tier} />
+                <StatusBadge status={st.status} />
               </div>
               <div style={{ height: 1, background: "rgba(255,255,255,0.06)", margin: "14px 0" }} />
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
