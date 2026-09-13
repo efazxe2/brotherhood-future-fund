@@ -8,6 +8,14 @@ export default defineConfig({
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["apple-touch-icon.png"],
+      // Switched from the default "generateSW" mode to "injectManifest":
+      // generateSW auto-builds a service worker with no way to add our own
+      // push/notificationclick listeners. injectManifest instead takes a
+      // service worker file we control (src/sw.js) and just injects the
+      // precache file list into it at build time.
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.js",
       manifest: {
         name: "Brotherhood Future Fund",
         short_name: "BFF Fund",
@@ -22,8 +30,10 @@ export default defineConfig({
           { src: "icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
       },
-      workbox: {
-        // cache the app shell so it still opens (with last-known data) offline
+      // Same offline-caching intent as before, just living under
+      // injectManifest instead of workbox (which only applies to
+      // generateSW mode and would now be silently ignored).
+      injectManifest: {
         globPatterns: ["**/*.{js,css,html,png,svg,ico}"],
       },
     }),
