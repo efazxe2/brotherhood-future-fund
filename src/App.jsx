@@ -797,6 +797,19 @@ export default function App() {
     }
   };
 
+  // The missing link: enablePush/disablePush above only manage *who's*
+  // subscribed. This is what actually fires a push — called after any
+  // significant change (a notice, a payment recorded/cleared, a member
+  // removed) so everyone finds out without having to open the app and
+  // check. Failure here is deliberately silent beyond a console log: the
+  // real action already succeeded and was saved; a notification that
+  // didn't go out isn't worth surfacing as an error to whoever just
+  // recorded a payment.
+  const notifyAll = (title, body, url) => {
+    supabase.functions.invoke("send-notification", { body: { title, body, url } })
+      .catch((e) => console.error("notifyAll failed", e));
+  };
+
   /* ---------------- derived ---------------- */
 
   const totalShares = members.reduce((s, m) => s + m.shares, 0) || TOTAL_SHARES_FALLBACK;
@@ -895,6 +908,7 @@ export default function App() {
     if (error) { showToast("Couldn't add member"); return; }
     showToast(`${name} added to the fund`);
     logActivity(`Added ${name} to the fund (${shares} share${shares === 1 ? "" : "s"})`);
+    notifyAll("New Member", `${name} was added to the fund (${shares} share${shares === 1 ? "" : "s"})`);
   };
 
   const doDeleteMember = async (id) => {
@@ -903,6 +917,7 @@ export default function App() {
     if (error) { showToast("Couldn't remove member"); return; }
     showToast("Member removed");
     logActivity(`Removed ${member ? member.name : "a member"} from the fund`);
+    notifyAll("Member Removed", `${member ? member.name : "A member"} was removed from the fund`);
   };
 
   const doSetPayment = async (memberId, monthKey, amount) => {
@@ -920,8 +935,10 @@ export default function App() {
     const monthLabel = monthInfo ? `${monthInfo.label} ${monthInfo.year}` : monthKey;
     if (amount > 0) {
       logActivity(`Recorded ${fmt(amount)} for ${name} — ${monthLabel}`);
+      notifyAll("Payment Recorded", `${fmt(amount)} — ${name}, ${monthLabel}`);
     } else {
       logActivity(`Cleared ${monthLabel} payment for ${name}`);
+      notifyAll("Payment Cleared", `${monthLabel} payment for ${name} was cleared`);
     }
   };
 
@@ -968,6 +985,7 @@ export default function App() {
       .join(", ");
 
     logActivity(`Recorded ${fmt(amount)} for ${member.name} — ${breakdown} (oldest dues first)`);
+    notifyAll("Payment Recorded", `${fmt(amount)} — ${member.name} (${breakdown})`);
   };
 
   const doUploadReceipt = async (member, monthKey, file) => {
@@ -1084,6 +1102,9 @@ export default function App() {
     showToast("Late fee updated");
     const name = member ? member.name : "a member";
     logActivity(`Late fee for ${name}: ${fmt(oldAmount)} → ${fmt(amount)}`);
+    if (amount > oldAmount) {
+      notifyAll("Penalty Charged", `${name} was charged a ${fmt(amount - oldAmount)} penalty`);
+    }
   };
 
   const doSetShares = async (memberId, shares) => {
@@ -1111,6 +1132,10 @@ export default function App() {
     if (error) { showToast("Couldn't post notice"); return; }
     showToast("Notice posted");
     logActivity(`Posted a notice${mentionedNames.length ? ` mentioning ${mentionedNames.join(", ")}` : ""}`);
+    notifyAll(
+      "New Notice — Brotherhood Future Fund",
+      message.length > 120 ? message.slice(0, 117) + "..." : message
+    );
   };
 
   const doDeleteNotice = async (id) => {
