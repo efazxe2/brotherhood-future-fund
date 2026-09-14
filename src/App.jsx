@@ -805,9 +805,17 @@ export default function App() {
   // real action already succeeded and was saved; a notification that
   // didn't go out isn't worth surfacing as an error to whoever just
   // recorded a payment.
-  const notifyAll = (title, body, url) => {
-    supabase.functions.invoke("send-notification", { body: { title, body, url } })
-      .catch((e) => console.error("notifyAll failed", e));
+  //
+  // Clean 2-line push format, consistent on iOS/Android/Desktop:
+  //   Title (line 1): the category/action, e.g. "Payment Recorded", "New Notice"
+  //   Body (line 2):  the details, e.g. "৳5,050 — Morshed (SEP 2026)"
+  //                   or, spanning months: "৳5,050 — Morshed (SEP 2026, OCT 2026)"
+  // `category` is sent as-is, never concatenated with the brand name —
+  // no "Brotherhood Future Fund" / "from BFF Fund" anywhere in the payload.
+  const notifyAll = (category, details, url) => {
+    supabase.functions.invoke("send-notification", {
+      body: { title: category, body: details, url },
+    }).catch((e) => console.error("notifyAll failed", e));
   };
 
   /* ---------------- derived ---------------- */
@@ -1133,7 +1141,7 @@ export default function App() {
     showToast("Notice posted");
     logActivity(`Posted a notice${mentionedNames.length ? ` mentioning ${mentionedNames.join(", ")}` : ""}`);
     notifyAll(
-      "New Notice — Brotherhood Future Fund",
+      "New Notice",
       message.length > 120 ? message.slice(0, 117) + "..." : message
     );
   };
