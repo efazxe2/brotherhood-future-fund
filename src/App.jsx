@@ -943,7 +943,7 @@ export default function App() {
     const monthLabel = monthInfo ? `${monthInfo.label} ${monthInfo.year}` : monthKey;
     if (amount > 0) {
       logActivity(`Recorded ${fmt(amount)} for ${name} — ${monthLabel}`);
-      notifyAll("Payment Recorded", `${fmt(amount)} — ${name}, ${monthLabel}`);
+      notifyAll("Payment Recorded", `${fmt(amount)} — ${name} (${monthLabel})`);
     } else {
       logActivity(`Cleared ${monthLabel} payment for ${name}`);
       notifyAll("Payment Cleared", `${monthLabel} payment for ${name} was cleared`);
@@ -982,18 +982,27 @@ export default function App() {
     }
 
     showToast("Payment recorded");
-    const breakdown = changedKeys
-      .sort((a, b) => MONTHS.findIndex((mo) => mo.key === a) - MONTHS.findIndex((mo) => mo.key === b))
-      .map((monthKey) => {
-        const monthInfo = MONTHS.find((mo) => mo.key === monthKey);
-        const label = monthInfo ? `${monthInfo.label} ${monthInfo.year}` : monthKey;
-        const added = changes[monthKey] - (existing[monthKey] || 0);
-        return `${label} +${fmt(added)}`;
-      })
-      .join(", ");
+    const sortedKeys = changedKeys
+      .sort((a, b) => MONTHS.findIndex((mo) => mo.key === a) - MONTHS.findIndex((mo) => mo.key === b));
+    const monthLabelOf = (monthKey) => {
+      const monthInfo = MONTHS.find((mo) => mo.key === monthKey);
+      return monthInfo ? `${monthInfo.label} ${monthInfo.year}` : monthKey;
+    };
+    const addedByMonth = sortedKeys.map((monthKey) => changes[monthKey] - (existing[monthKey] || 0));
+    const totalAdded = addedByMonth.reduce((s, v) => s + v, 0);
 
+    // Detailed per-month breakdown (with each month's own +amount) — for the
+    // admin activity log only, where that level of detail is useful.
+    const breakdown = sortedKeys
+      .map((monthKey, i) => `${monthLabelOf(monthKey)} +${fmt(addedByMonth[i])}`)
+      .join(", ");
     logActivity(`Recorded ${fmt(amount)} for ${member.name} — ${breakdown} (oldest dues first)`);
-    notifyAll("Payment Recorded", `${fmt(amount)} — ${member.name} (${breakdown})`);
+
+    // Push notification: one grand total (dynamically summed across every
+    // month touched, not just the raw entered amount) plus a plain,
+    // amount-free list of the months covered — never repeats the figure.
+    const monthList = sortedKeys.map(monthLabelOf).join(", ");
+    notifyAll("Payment Recorded", `${fmt(totalAdded)} — ${member.name} (${monthList})`);
   };
 
   const doUploadReceipt = async (member, monthKey, file) => {
