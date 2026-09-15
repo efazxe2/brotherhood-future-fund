@@ -2244,8 +2244,8 @@ function WealthLabTab({
         <>
           <CumulativeGrowthChart monthlyTotals={monthlyTotals} totalShares={totalShares} />
           <FundAllocationChart collectedPrincipal={collectedPrincipal} totalPendingDues={totalPendingDues} />
-          <MonthComparisonStat monthlyTotals={monthlyTotals} />
           <LateFeeDistributionCard members={members} statsById={statsById} penaltyPool={penaltyPool} />
+          <MonthComparisonStat monthlyTotals={monthlyTotals} />
         </>
       )}
 
@@ -2305,7 +2305,7 @@ function LateFeeDistributionCard({ members, statsById, penaltyPool }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 480 }}>
             <thead>
               <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                {["Member", "Ownership %", "Late Fee Share", "Equity", "Total Equity + Late Fee Income"].map((h, i) => (
+                {["Member", "Ownership %", "Late Fee Share", "Equity", "Total"].map((h, i) => (
                   <th
                     key={h}
                     style={{
