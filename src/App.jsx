@@ -130,7 +130,13 @@ function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShar
   const maintenanceFeeCollected = Math.min(maintenanceFeeOwed, paidPrincipal);
   const equityPrincipal = paidPrincipal - maintenanceFeeCollected;
 
-  const equity = equityPrincipal - lateFee + penaltyPool * (member.shares / totalShares);
+  // Late fee income is no longer redistributed into equity by ownership
+  // share — a member's own charged penalty still reduces their own equity
+  // (that's a personal deduction, not "income"), but the pooled total no
+  // longer flows back into everyone's balance. The pool's distribution is
+  // shown separately in the Wealth tab's Late Fee Distribution section,
+  // display-only, never applied here.
+  const equity = equityPrincipal - lateFee;
   const ownership = (member.shares / totalShares) * 100;
   let status = "Pending";
   if (paidPrincipal > 0 && pendingDue === 0) status = "Paid";
@@ -1356,6 +1362,7 @@ export default function App() {
             collectedPrincipal={collectedPrincipal}
             totalPendingDues={totalPendingDues}
             totalShares={totalShares}
+            penaltyPool={penaltyPool}
             monthlyTotals={monthlyTotals}
             goldRates={goldRates}
             isAdmin={isAdmin}
@@ -2191,7 +2198,7 @@ function ProjectionRow({ label, value, highlight }) {
 /* ==================================================================== */
 
 function WealthLabTab({
-  members, statsById, collectedPrincipal, totalPendingDues, totalShares,
+  members, statsById, collectedPrincipal, totalPendingDues, totalShares, penaltyPool,
   monthlyTotals, goldRates, isAdmin, onSaveGoldRate,
 }) {
   const [subTab, setSubTab] = useState("fund");
@@ -2238,6 +2245,7 @@ function WealthLabTab({
           <CumulativeGrowthChart monthlyTotals={monthlyTotals} totalShares={totalShares} />
           <FundAllocationChart collectedPrincipal={collectedPrincipal} totalPendingDues={totalPendingDues} />
           <MonthComparisonStat monthlyTotals={monthlyTotals} />
+          <LateFeeDistributionCard members={members} statsById={statsById} penaltyPool={penaltyPool} />
         </>
       )}
 
@@ -2264,7 +2272,79 @@ function WealthLabTab({
   );
 }
 
-function WealthSectionHeader({ icon, title, subtitle }) {
+function LateFeeDistributionCard({ members, statsById, penaltyPool }) {
+  const rows = members
+    .map((m) => {
+      const st = statsById[m.id];
+      if (!st) return null;
+      const share = penaltyPool * (st.ownership / 100);
+      return { id: m.id, name: m.name, ownership: st.ownership, share, equity: st.equity };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.share - a.share);
+
+  const totalShare = rows.reduce((s, r) => s + r.share, 0);
+  const totalEquity = rows.reduce((s, r) => s + r.equity, 0);
+
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 16 }}>
+      <WealthSectionHeader
+        icon={<Clock size={15} color="#f87171" />}
+        title="Late Fee Distribution"
+        subtitle="Display only — how the collected penalty pool would split by ownership. Not added to anyone's equity balance above."
+      />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 14 }}>
+        <span style={{ fontSize: 12, color: "#5b6478" }}>Total Late Fee Collected</span>
+        <span style={{ fontSize: 20, fontWeight: 800, color: "#f87171" }}>{fmt(penaltyPool)}</span>
+      </div>
+
+      {penaltyPool <= 0 ? (
+        <div style={{ fontSize: 12.5, color: "#5b6478" }}>No late fees collected yet.</div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 480 }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                {["Member", "Ownership %", "Late Fee Share", "Equity", "Total Equity + Late Fee Income"].map((h, i) => (
+                  <th
+                    key={h}
+                    style={{
+                      textAlign: i === 0 ? "left" : "right", padding: "6px 8px",
+                      color: "#5b6478", fontWeight: 700, fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.4,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                  <td style={{ padding: "8px", color: "#f4f6fb", fontWeight: 600, whiteSpace: "nowrap" }}>{r.name}</td>
+                  <td style={{ padding: "8px", textAlign: "right", color: "#9aa3b8" }}>{r.ownership.toFixed(1)}%</td>
+                  <td style={{ padding: "8px", textAlign: "right", color: "#f87171", fontWeight: 700 }}>{fmt(r.share)}</td>
+                  <td style={{ padding: "8px", textAlign: "right", color: "#9aa3b8" }}>{fmtSigned(r.equity)}</td>
+                  <td style={{ padding: "8px", textAlign: "right", color: "#34d399", fontWeight: 700 }}>{fmtSigned(r.equity + r.share)}</td>
+                </tr>
+              ))}
+              <tr>
+                <td style={{ padding: "8px", color: "#f4f6fb", fontWeight: 800 }}>Total</td>
+                <td style={{ padding: "8px", textAlign: "right", color: "#9aa3b8", fontWeight: 800 }}>100.0%</td>
+                <td style={{ padding: "8px", textAlign: "right", color: "#f87171", fontWeight: 800 }}>{fmt(totalShare)}</td>
+                <td style={{ padding: "8px", textAlign: "right", color: "#9aa3b8", fontWeight: 800 }}>{fmtSigned(totalEquity)}</td>
+                <td style={{ padding: "8px", textAlign: "right", color: "#34d399", fontWeight: 800 }}>{fmtSigned(totalEquity + totalShare)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
   return (
     <div style={{ marginBottom: subtitle ? 4 : 14 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: subtitle ? 4 : 0 }}>
