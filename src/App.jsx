@@ -2345,6 +2345,7 @@ function LateFeeDistributionCard({ members, statsById, penaltyPool }) {
 }
 
 
+function WealthSectionHeader({ icon, title, subtitle }) {
   return (
     <div style={{ marginBottom: subtitle ? 4 : 14 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: subtitle ? 4 : 0 }}>
