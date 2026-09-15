@@ -224,17 +224,20 @@ function computeOverdueAlert(member, payments, currentMonthKey) {
 
 // Ranks members who fully paid *this calendar month's* dues on or before the
 // 10th, by the actual timestamp their payment for that month was recorded.
-// Fresh every month by construction — there's no stored state to reset.
+// Fresh every month by construction (keyed off the current Dhaka month key,
+// no stored state) — as soon as a new month starts, monthKey changes and
+// every member's qualification is recomputed from scratch against that
+// month's own payments, so there's nothing to manually reset.
 const MONTHLY_BADGE_ORDER = [
-  { key: "king", label: "The King", emoji: "\u{1F451}",
-    color: "#fcd34d", bg: "rgba(245,158,11,0.2)", border: "rgba(245,158,11,0.4)", bold: true },       // amber-300 text / amber-500 bg+border
-  { key: "batman", label: "The Batman", emoji: "\u{1F987}",
-    color: "#e2e8f0", bg: "rgba(51,65,85,0.4)", border: "rgba(100,116,139,0.4)", bold: true },          // slate-200 text / slate-700 bg, slate-500 border
-  { key: "vampire", label: "The Vampire", emoji: "\u{1F9DB}",
-    color: "#d8b4fe", bg: "rgba(88,28,135,0.3)", border: "rgba(168,85,247,0.4)", bold: true },          // purple-300 text / purple-900 bg, purple-500 border
+  { key: "king", label: "The King", emoji: "\u{1F947}",
+    color: "#fcd34d", bg: "rgba(245,158,11,0.2)", border: "rgba(245,158,11,0.4)", bold: true },       // gold medal — amber-300 text / amber-500 bg+border
+  { key: "legend", label: "The Legend", emoji: "\u{1F948}",
+    color: "#e2e8f0", bg: "rgba(100,116,139,0.25)", border: "rgba(148,163,184,0.4)", bold: true },     // silver medal — slate-200 text / slate-400 border
+  { key: "titan", label: "The Titan", emoji: "\u{1F949}",
+    color: "#fdba74", bg: "rgba(180,83,9,0.25)", border: "rgba(217,119,6,0.45)", bold: true },         // bronze medal — orange-300 text / amber-700 bg, amber-600 border
 ];
 const ON_TIME_CHAMPION_BADGE = {
-  key: "champion", label: "On Time Champion", emoji: "\u{1F977}",
+  key: "warrior", label: "The Warrior", emoji: "\u2694\uFE0F",
   color: "#34d399", bg: "rgba(16,185,129,0.2)", border: "rgba(16,185,129,0.3)",                          // emerald-400 text / emerald-500 bg+border
 };
 
