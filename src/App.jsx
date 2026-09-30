@@ -8,7 +8,7 @@ import {
   Trophy, Calendar, ArrowUp, ChevronDown
 } from "lucide-react";
 import {
-  AreaChart, Area, LineChart, Line, PieChart, Pie, Cell, Legend, ReferenceLine,
+  AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, Legend, ReferenceLine,
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from "recharts";
 import { supabase } from "./supabaseClient";
@@ -2039,52 +2039,43 @@ function RecentActivitiesCard({ activityLog, onViewAll }) {
   );
 }
 
-function CumulativeGrowthChart({ monthlyTotals, totalShares }) {
-  let running = 0;
+function MonthlyBreakdownChart({ monthlyTotals, totalShares }) {
   const data = MONTHS.map((mo, i) => {
-    running += monthlyTotals[i]?.value || 0;
-    return {
-      name: mo.label,
-      Actual: running,
-      Target: totalShares * ratesSumUpTo(i + 1),
-    };
+    const target = totalShares * rateForMonth(i);
+    const collected = monthlyTotals[i]?.value || 0;
+    const pending = Math.max(0, target - collected);
+    return { name: mo.label, Collected: collected, Pending: pending, Target: target };
   });
 
   return (
     <div className="bff-card" style={{ padding: "18px 10px 8px", marginBottom: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px", marginBottom: 6 }}>
         <TrendingUp size={15} color="#5bb8ff" />
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Cumulative Growth</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Monthly Collection vs Target</span>
       </div>
-      <div style={{ padding: "0 10px", marginBottom: 4, fontSize: 11.5, color: "#5b6478" }}>
-        What's actually been collected vs. what full on-time payment would look like.
+      <div style={{ padding: "0 10px", marginBottom: 8, fontSize: 11.5, color: "#5b6478" }}>
+        Each month's own target next to what's actually been collected and what's still pending for it.
       </div>
-      <div style={{ height: 190 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-            <XAxis dataKey="name" tick={{ fill: "#5b6478", fontSize: 10 }} axisLine={false} tickLine={false} />
-            {/* Two separate, independently auto-scaled axes: Actual and Target
-                differ by orders of magnitude this early in a 12-month cycle
-                (Target already reflects the full year's eventual total), so
-                sharing one axis would size it to fit Target and flatten
-                Actual's real, smaller movements to near-invisible. */}
-            <YAxis yAxisId="actual" hide />
-            <YAxis yAxisId="target" hide />
-            <Tooltip
-              formatter={(v, name) => [fmt(v), name]}
-              contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 12 }}
-              labelStyle={{ color: "#8b93a7" }}
-            />
-            <Legend wrapperStyle={{ fontSize: 11.5, color: "#8b93a7" }} iconType="plainline" iconSize={14} />
-            <ReferenceLine yAxisId="actual" x={MONTHS[5].label} stroke="rgba(245,185,66,0.5)" strokeDasharray="3 3"
-              label={{ value: "6-Mo", position: "top", fill: "#f5b942", fontSize: 10 }} />
-            <ReferenceLine yAxisId="actual" x={MONTHS[11].label} stroke="rgba(52,211,153,0.5)" strokeDasharray="3 3"
-              label={{ value: "Year-End", position: "top", fill: "#34d399", fontSize: 10 }} />
-            <Line yAxisId="actual" type="monotone" dataKey="Actual" stroke="#5bb8ff" strokeWidth={2.5} dot={{ r: 3, fill: "#5bb8ff" }} />
-            <Line yAxisId="target" type="monotone" dataKey="Target" stroke="#5b6478" strokeWidth={1.5} strokeDasharray="5 5" dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
+      <div style={{ height: 220, overflowX: "auto" }}>
+        <div style={{ height: "100%", minWidth: 640 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+              <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+              <XAxis dataKey="name" tick={{ fill: "#5b6478", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis hide />
+              <Tooltip
+                formatter={(v, name) => [fmt(v), name]}
+                contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 12 }}
+                labelStyle={{ color: "#8b93a7" }}
+                cursor={{ fill: "rgba(255,255,255,0.04)" }}
+              />
+              <Legend wrapperStyle={{ fontSize: 11.5, color: "#8b93a7" }} iconType="circle" iconSize={8} />
+              <Bar dataKey="Collected" fill="#34d399" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="Pending" fill="#f5b942" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="Target" fill="#5b6478" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );
@@ -2260,7 +2251,7 @@ function WealthLabTab({
 
       {subTab === "fund" && (
         <>
-          <CumulativeGrowthChart monthlyTotals={monthlyTotals} totalShares={totalShares} />
+          <MonthlyBreakdownChart monthlyTotals={monthlyTotals} totalShares={totalShares} />
           <FundAllocationChart collectedPrincipal={collectedPrincipal} totalPendingDues={totalPendingDues} />
           <LateFeeDistributionCard members={members} statsById={statsById} penaltyPool={penaltyPool} />
           <MonthComparisonStat monthlyTotals={monthlyTotals} />
