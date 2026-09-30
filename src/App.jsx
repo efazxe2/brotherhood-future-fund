@@ -138,9 +138,21 @@ function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShar
   // display-only, never applied here.
   const equity = equityPrincipal - lateFee;
   const ownership = (member.shares / totalShares) * 100;
+  // Status reflects the CURRENT active month specifically, not lifetime
+  // paidPrincipal — otherwise once someone pays their first month ever,
+  // paidPrincipal stays > 0 forever, so a member who fully paid September
+  // and then paid nothing at all for October would still show "Partial"
+  // instead of "Pending" the moment October starts, just because they have
+  // *some* history of paying. "Pending" now specifically means "nothing
+  // paid toward the current month," regardless of how caught-up they were
+  // before it started.
+  const currentMonthIdx = elapsed - 1;
+  const currentMonthKey = MONTHS[currentMonthIdx]?.key;
+  const currentMonthPaid = currentMonthKey ? (memberPayments[currentMonthKey] || 0) : 0;
   let status = "Pending";
-  if (paidPrincipal > 0 && pendingDue === 0) status = "Paid";
-  else if (paidPrincipal > 0) status = "Partial";
+  if (pendingDue === 0) status = "Paid";
+  else if (currentMonthPaid > 0) status = "Partial";
+  else status = "Pending";
   const dueAlert = pendingDue > 0;
   return {
     paidPrincipal, expectedDue, pendingDue, lateFee, equity, ownership, status, dueAlert,
@@ -2052,7 +2064,13 @@ function CumulativeGrowthChart({ monthlyTotals, totalShares }) {
           <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
             <XAxis dataKey="name" tick={{ fill: "#5b6478", fontSize: 10 }} axisLine={false} tickLine={false} />
-            <YAxis hide />
+            {/* Two separate, independently auto-scaled axes: Actual and Target
+                differ by orders of magnitude this early in a 12-month cycle
+                (Target already reflects the full year's eventual total), so
+                sharing one axis would size it to fit Target and flatten
+                Actual's real, smaller movements to near-invisible. */}
+            <YAxis yAxisId="actual" hide />
+            <YAxis yAxisId="target" hide />
             <Tooltip
               formatter={(v, name) => [fmt(v), name]}
               contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 12 }}
@@ -2063,8 +2081,8 @@ function CumulativeGrowthChart({ monthlyTotals, totalShares }) {
               label={{ value: "6-Mo", position: "top", fill: "#f5b942", fontSize: 10 }} />
             <ReferenceLine x={MONTHS[11].label} stroke="rgba(52,211,153,0.5)" strokeDasharray="3 3"
               label={{ value: "Year-End", position: "top", fill: "#34d399", fontSize: 10 }} />
-            <Line type="monotone" dataKey="Actual" stroke="#5bb8ff" strokeWidth={2.5} dot={false} />
-            <Line type="monotone" dataKey="Target" stroke="#5b6478" strokeWidth={1.5} strokeDasharray="5 5" dot={false} />
+            <Line yAxisId="actual" type="monotone" dataKey="Actual" stroke="#5bb8ff" strokeWidth={2.5} dot={{ r: 3, fill: "#5bb8ff" }} />
+            <Line yAxisId="target" type="monotone" dataKey="Target" stroke="#5b6478" strokeWidth={1.5} strokeDasharray="5 5" dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
