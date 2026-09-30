@@ -2044,25 +2044,26 @@ function MonthlyBreakdownChart({ monthlyTotals, totalShares }) {
     const target = totalShares * rateForMonth(i);
     const collected = monthlyTotals[i]?.value || 0;
     const pending = Math.max(0, target - collected);
-    return { name: mo.label, Collected: collected, Pending: pending, Target: target };
+    return { name: mo.label, Collected: collected, "Pending/Due": pending };
   });
 
   return (
     <div className="bff-card" style={{ padding: "18px 10px 8px", marginBottom: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px", marginBottom: 6 }}>
         <TrendingUp size={15} color="#5bb8ff" />
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Monthly Collection vs Target</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#f4f6fb" }}>Monthly Collection Status</span>
       </div>
       <div style={{ padding: "0 10px", marginBottom: 8, fontSize: 11.5, color: "#5b6478" }}>
-        Each month's own target next to what's actually been collected and what's still pending for it.
+        Stacked view of collected vs. pending dues per month against the target.
       </div>
       <div style={{ height: 220, overflowX: "auto" }}>
-        <div style={{ height: "100%", minWidth: 640 }}>
+        <div style={{ height: "100%", minWidth: 560 }}>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
               <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
               <XAxis dataKey="name" tick={{ fill: "#5b6478", fontSize: 10 }} axisLine={false} tickLine={false} />
-              <YAxis hide />
+              <YAxis tick={{ fill: "#5b6478", fontSize: 10 }} axisLine={false} tickLine={false}
+                tickFormatter={(v) => (v >= 1000 ? `${v / 1000}K \u09F3` : `${v} \u09F3`)} />
               <Tooltip
                 formatter={(v, name) => [fmt(v), name]}
                 contentStyle={{ background: "#0b0f18", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 12 }}
@@ -2070,9 +2071,8 @@ function MonthlyBreakdownChart({ monthlyTotals, totalShares }) {
                 cursor={{ fill: "rgba(255,255,255,0.04)" }}
               />
               <Legend wrapperStyle={{ fontSize: 11.5, color: "#8b93a7" }} iconType="circle" iconSize={8} />
-              <Bar dataKey="Collected" fill="#34d399" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="Pending" fill="#f5b942" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="Target" fill="#5b6478" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="Collected" stackId="month" fill="#34d399" radius={[0, 0, 0, 0]} />
+              <Bar dataKey="Pending/Due" stackId="month" fill="#f5b942" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
