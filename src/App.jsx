@@ -2077,9 +2077,9 @@ function CumulativeGrowthChart({ monthlyTotals, totalShares }) {
               labelStyle={{ color: "#8b93a7" }}
             />
             <Legend wrapperStyle={{ fontSize: 11.5, color: "#8b93a7" }} iconType="plainline" iconSize={14} />
-            <ReferenceLine x={MONTHS[5].label} stroke="rgba(245,185,66,0.5)" strokeDasharray="3 3"
+            <ReferenceLine yAxisId="actual" x={MONTHS[5].label} stroke="rgba(245,185,66,0.5)" strokeDasharray="3 3"
               label={{ value: "6-Mo", position: "top", fill: "#f5b942", fontSize: 10 }} />
-            <ReferenceLine x={MONTHS[11].label} stroke="rgba(52,211,153,0.5)" strokeDasharray="3 3"
+            <ReferenceLine yAxisId="actual" x={MONTHS[11].label} stroke="rgba(52,211,153,0.5)" strokeDasharray="3 3"
               label={{ value: "Year-End", position: "top", fill: "#34d399", fontSize: 10 }} />
             <Line yAxisId="actual" type="monotone" dataKey="Actual" stroke="#5bb8ff" strokeWidth={2.5} dot={{ r: 3, fill: "#5bb8ff" }} />
             <Line yAxisId="target" type="monotone" dataKey="Target" stroke="#5b6478" strokeWidth={1.5} strokeDasharray="5 5" dot={false} />
