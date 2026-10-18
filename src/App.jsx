@@ -630,6 +630,7 @@ export default function App() {
   const [receipts, setReceipts] = useState({});
   const [lateFees, setLateFees] = useState({});
   const [lateFeesPaid, setLateFeesPaid] = useState({});
+  const [lateFeeReceipts, setLateFeeReceipts] = useState({});
   const [notices, setNotices] = useState([]);
   const [activityLog, setActivityLog] = useState([]);
   const [goldRates, setGoldRates] = useState([]);
@@ -693,9 +694,11 @@ export default function App() {
 
     const lateFeesObj = {};
     const lateFeesPaidObj = {};
+    const lateFeeReceiptsObj = {};
     (lateFeesRes.data || []).forEach((row) => {
       lateFeesObj[row.member_id] = Number(row.amount);
       lateFeesPaidObj[row.member_id] = Number(row.paid || 0);
+      lateFeeReceiptsObj[row.member_id] = Array.isArray(row.receipt_paths) ? row.receipt_paths : [];
     });
 
     return {
@@ -705,6 +708,7 @@ export default function App() {
       receipts: receiptsObj,
       lateFees: lateFeesObj,
       lateFeesPaid: lateFeesPaidObj,
+      lateFeeReceipts: lateFeeReceiptsObj,
       notices: noticesRes.data || [],
       activityLog: activityRes.data || [],
       goldRates: goldRatesRes.data || [],
@@ -725,6 +729,7 @@ export default function App() {
         setReceipts(d.receipts);
         setLateFees(d.lateFees);
         setLateFeesPaid(d.lateFeesPaid);
+        setLateFeeReceipts(d.lateFeeReceipts);
         setNotices(d.notices);
         setActivityLog(d.activityLog);
         setGoldRates(d.goldRates);
@@ -746,6 +751,7 @@ export default function App() {
         setReceipts(d.receipts);
         setLateFees(d.lateFees);
         setLateFeesPaid(d.lateFeesPaid);
+        setLateFeeReceipts(d.lateFeeReceipts);
         setNotices(d.notices);
         setActivityLog(d.activityLog);
         setGoldRates(d.goldRates);
@@ -1088,13 +1094,53 @@ export default function App() {
     logActivity(`Removed receipt for ${member.name} — ${monthLabel}`);
   };
 
-  const totalReceiptCount = Object.values(receipts).reduce(
-    (sum, memberReceipts) => sum + Object.keys(memberReceipts).length,
-    0
-  );
+  // Late fee receipts live on the late_fees row (several allowed, since a
+  // fee can be paid in parts) and share the same "receipts" storage bucket.
+  const doUploadLateFeeReceipt = async (member, file) => {
+    const charged = lateFees[member.id] || 0;
+    if (charged <= 0) { showToast("Charge a late fee first, then attach the receipt"); return; }
+    const ext = (file.name.split(".").pop() || "dat").toLowerCase();
+    const path = `${member.id}/latefee-${Date.now()}.${ext}`;
+
+    const { error: upErr } = await supabase.storage
+      .from("receipts")
+      .upload(path, file, { upsert: true, contentType: file.type });
+    if (upErr) { showToast("Couldn't upload receipt"); return; }
+
+    const next = [...(lateFeeReceipts[member.id] || []), path];
+    const { error: dbErr } = await supabase
+      .from("late_fees")
+      .upsert({ member_id: member.id, amount: charged, receipt_paths: next }, { onConflict: "member_id" });
+    if (dbErr) {
+      await supabase.storage.from("receipts").remove([path]);
+      showToast("Couldn't save receipt");
+      return;
+    }
+    showToast("Late fee receipt uploaded");
+    logActivity(`Uploaded late fee receipt for ${member.name}`);
+  };
+
+  const doRemoveLateFeeReceipt = async (member, path) => {
+    const charged = lateFees[member.id] || 0;
+    await supabase.storage.from("receipts").remove([path]);
+    const next = (lateFeeReceipts[member.id] || []).filter((x) => x !== path);
+    const { error } = await supabase
+      .from("late_fees")
+      .upsert({ member_id: member.id, amount: charged, receipt_paths: next }, { onConflict: "member_id" });
+    if (error) { showToast("Couldn't remove receipt"); return; }
+    showToast("Late fee receipt removed");
+    logActivity(`Removed late fee receipt for ${member.name}`);
+  };
+
+  const totalReceiptCount =
+    Object.values(receipts).reduce((sum, memberReceipts) => sum + Object.keys(memberReceipts).length, 0) +
+    Object.values(lateFeeReceipts).reduce((sum, list) => sum + list.length, 0);
 
   const doDeleteAllReceipts = async () => {
-    const allPaths = Object.values(receipts).flatMap((memberReceipts) => Object.values(memberReceipts));
+    const allPaths = [
+      ...Object.values(receipts).flatMap((memberReceipts) => Object.values(memberReceipts)),
+      ...Object.values(lateFeeReceipts).flatMap((list) => list),
+    ];
     if (allPaths.length === 0) { showToast("No receipts to delete"); return; }
 
     const { error: storageError } = await supabase.storage.from("receipts").remove(allPaths);
@@ -1104,7 +1150,11 @@ export default function App() {
       .from("payments")
       .update({ receipt_path: null })
       .not("receipt_path", "is", null);
-    if (dbError) { showToast("Files deleted, but couldn't clear attachments"); return; }
+    const { error: lfDbError } = await supabase
+      .from("late_fees")
+      .update({ receipt_paths: [] })
+      .not("receipt_paths", "is", null);
+    if (dbError || lfDbError) { showToast("Files deleted, but couldn't clear attachments"); return; }
 
     showToast(`Deleted ${allPaths.length} receipt${allPaths.length === 1 ? "" : "s"}`);
     logActivity(`Deleted all receipt attachments (${allPaths.length} file${allPaths.length === 1 ? "" : "s"})`);
@@ -1454,6 +1504,9 @@ export default function App() {
           tier={overdueById[selectedMember.id]?.tier || null}
           payments={payments[selectedMember.id] || {}}
           receipts={receipts[selectedMember.id] || {}}
+          lateFeeReceipts={lateFeeReceipts[selectedMember.id] || []}
+          onUploadLateFeeReceipt={(file) => doUploadLateFeeReceipt(selectedMember, file)}
+          onRemoveLateFeeReceipt={(path) => doRemoveLateFeeReceipt(selectedMember, path)}
           badges={badgesById[selectedMember.id]}
           isAdmin={isAdmin}
           onClose={() => setSelectedMember(null)}
@@ -3648,7 +3701,7 @@ function ActivityTab({ activityLog }) {
   );
 }
 
-function MemberDetailModal({ member, stats, tier, payments, receipts, badges, isAdmin, onClose, onEditLateFee, onRecordLateFeePaid, onEditShares, onEditMonth, onUploadReceipt, onRemoveReceipt }) {
+function MemberDetailModal({ member, stats, tier, payments, receipts, lateFeeReceipts = [], onUploadLateFeeReceipt, onRemoveLateFeeReceipt, badges, isAdmin, onClose, onEditLateFee, onRecordLateFeePaid, onEditShares, onEditMonth, onUploadReceipt, onRemoveReceipt }) {
   return (
     <ModalShell onClose={onClose} align="bottom">
       <div style={{ padding: "22px 20px 28px" }}>
@@ -3717,6 +3770,72 @@ function MemberDetailModal({ member, stats, tier, payments, receipts, badges, is
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <button onClick={onEditLateFee} className="bff-editbtn">Edit Late Fee</button>
               <button onClick={onRecordLateFeePaid} className="bff-editbtn">Record Payment</button>
+            </div>
+          )}
+
+          {(lateFeeReceipts.length > 0 || (isAdmin && stats.lateFee > 0)) && (
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(248,113,113,0.2)" }}>
+              <div style={{ fontSize: 11, color: "#8b93a7", marginBottom: 8, display: "flex", alignItems: "center", gap: 4 }}>
+                <Paperclip size={11} /> Late fee receipts
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {lateFeeReceipts.map((path, i) => {
+                  const url = supabase.storage.from("receipts").getPublicUrl(path).data.publicUrl;
+                  return (
+                    <div key={path} style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+                      padding: "9px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)",
+                      border: "1px solid rgba(255,255,255,0.06)",
+                    }}>
+                      <span style={{ fontSize: 13, color: "#c3cadb", fontWeight: 600 }}>Receipt {i + 1}</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                        <button
+                          onClick={() => window.open(url, "_blank")}
+                          title="View receipt"
+                          style={receiptIconBtnStyle("#5bb8ff", "rgba(91,184,255,0.1)", "rgba(91,184,255,0.3)")}
+                        >
+                          <Eye size={13} />
+                        </button>
+                        {isAdmin && (
+                          <button
+                            onClick={() => onRemoveLateFeeReceipt(path)}
+                            title="Remove receipt"
+                            style={receiptIconBtnStyle("#f87171", "rgba(248,113,113,0.08)", "rgba(248,113,113,0.25)")}
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {isAdmin && stats.lateFee > 0 && (
+                  <>
+                    <input
+                      type="file"
+                      accept="image/*,application/pdf"
+                      id="latefee-receipt-input"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) onUploadLateFeeReceipt(f);
+                        e.target.value = "";
+                      }}
+                    />
+                    <label
+                      htmlFor="latefee-receipt-input"
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                        padding: "10px 12px", borderRadius: 10, cursor: "pointer",
+                        background: "rgba(91,184,255,0.08)", border: "1px dashed rgba(91,184,255,0.35)",
+                        color: "#5bb8ff", fontSize: 12.5, fontWeight: 700,
+                      }}
+                    >
+                      <Paperclip size={13} /> Attach late fee receipt
+                    </label>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </div>
