@@ -107,7 +107,7 @@ function isOnOrBeforeDay10InMonth(isoTimestamp, monthKey) {
   return paymentMonthKey === monthKey && day <= 10;
 }
 
-function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShares) {
+function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShares, lateFeesPaid = {}) {
   const memberPayments = payments[member.id] || {};
   const paidPrincipal = MONTHS.reduce((sum, m) => sum + (memberPayments[m.key] || 0), 0);
   const expectedDue = member.shares * ratesSumUpTo(elapsed);
@@ -124,7 +124,13 @@ function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShar
     const paid = memberPayments[MONTHS[i].key] || 0;
     pendingDue += Math.max(0, owed - paid);
   }
+  // Late fees live entirely outside the installment math above: `lateFee` is
+  // what was charged, `lateFeePaid` is cash actually received against it
+  // (recorded separately, never through the monthly payment cells), and
+  // `lateFeeOutstanding` is the unpaid remainder.
   const lateFee = lateFees[member.id] || 0;
+  const lateFeePaid = Math.min(lateFee, lateFeesPaid[member.id] || 0);
+  const lateFeeOutstanding = Math.max(0, lateFee - lateFeePaid);
 
   const maintenanceFeeOwed = member.shares * SEP_MAINTENANCE;
   const maintenanceFeeCollected = Math.min(maintenanceFeeOwed, paidPrincipal);
@@ -136,7 +142,10 @@ function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShar
   // longer flows back into everyone's balance. The pool's distribution is
   // shown separately in the Wealth tab's Late Fee Distribution section,
   // display-only, never applied here.
-  const equity = equityPrincipal - lateFee;
+  // Only the UNPAID part of a penalty is cut from equity. If the member
+  // paid the fee in cash, there's nothing left to deduct; if they didn't,
+  // the outstanding amount comes out of their equity automatically.
+  const equity = equityPrincipal - lateFeeOutstanding;
   const ownership = (member.shares / totalShares) * 100;
   // Status reflects the CURRENT active month specifically, not lifetime
   // paidPrincipal — otherwise once someone pays their first month ever,
@@ -155,7 +164,7 @@ function memberStats(member, payments, lateFees, elapsed, penaltyPool, totalShar
   else status = "Pending";
   const dueAlert = pendingDue > 0;
   return {
-    paidPrincipal, expectedDue, pendingDue, lateFee, equity, ownership, status, dueAlert,
+    paidPrincipal, expectedDue, pendingDue, lateFee, lateFeePaid, lateFeeOutstanding, equity, ownership, status, dueAlert,
     maintenanceFeeOwed, maintenanceFeeCollected,
   };
 }
@@ -369,7 +378,9 @@ function generateMemberStatementPDF(member, stats, payments) {
     ["Expected Due", fmt(stats.expectedDue)],
     ["Total Received", fmt(stats.paidPrincipal)],
     ["Pending Due", fmt(stats.pendingDue)],
-    ["Late Fees", fmt(stats.lateFee)],
+    ["Late Fees Charged", fmt(stats.lateFee)],
+    ["Late Fees Paid", fmt(stats.lateFeePaid)],
+    ["Late Fees Outstanding (deducted from equity)", fmt(stats.lateFeeOutstanding)],
     ["Maintenance Fee (excl. from equity)", fmt(stats.maintenanceFeeCollected)],
     ["Current Equity", fmtSigned(stats.equity)],
   ];
@@ -618,6 +629,7 @@ export default function App() {
   const [paymentTimestamps, setPaymentTimestamps] = useState({});
   const [receipts, setReceipts] = useState({});
   const [lateFees, setLateFees] = useState({});
+  const [lateFeesPaid, setLateFeesPaid] = useState({});
   const [notices, setNotices] = useState([]);
   const [activityLog, setActivityLog] = useState([]);
   const [goldRates, setGoldRates] = useState([]);
@@ -680,8 +692,10 @@ export default function App() {
     });
 
     const lateFeesObj = {};
+    const lateFeesPaidObj = {};
     (lateFeesRes.data || []).forEach((row) => {
       lateFeesObj[row.member_id] = Number(row.amount);
+      lateFeesPaidObj[row.member_id] = Number(row.paid || 0);
     });
 
     return {
@@ -690,6 +704,7 @@ export default function App() {
       paymentTimestamps: paymentTimestampsObj,
       receipts: receiptsObj,
       lateFees: lateFeesObj,
+      lateFeesPaid: lateFeesPaidObj,
       notices: noticesRes.data || [],
       activityLog: activityRes.data || [],
       goldRates: goldRatesRes.data || [],
@@ -709,6 +724,7 @@ export default function App() {
         setPaymentTimestamps(d.paymentTimestamps);
         setReceipts(d.receipts);
         setLateFees(d.lateFees);
+        setLateFeesPaid(d.lateFeesPaid);
         setNotices(d.notices);
         setActivityLog(d.activityLog);
         setGoldRates(d.goldRates);
@@ -729,6 +745,7 @@ export default function App() {
         setPaymentTimestamps(d.paymentTimestamps);
         setReceipts(d.receipts);
         setLateFees(d.lateFees);
+        setLateFeesPaid(d.lateFeesPaid);
         setNotices(d.notices);
         setActivityLog(d.activityLog);
         setGoldRates(d.goldRates);
@@ -856,8 +873,10 @@ export default function App() {
   let totalPendingDues = 0;
   let totalMaintenanceFee = 0;
   let maintenanceFeeCollected = 0;
+  let lateFeeCollected = 0;
+  let lateFeeOutstanding = 0;
   members.forEach((m) => {
-    const st = memberStats(m, payments, lateFees, elapsed, penaltyPool, totalShares);
+    const st = memberStats(m, payments, lateFees, elapsed, penaltyPool, totalShares, lateFeesPaid);
     statsById[m.id] = st;
     const overdue = computeOverdueAlert(m, payments, currentMonthKey);
     overdueById[m.id] = overdue;
@@ -879,6 +898,8 @@ export default function App() {
     totalPendingDues += st.pendingDue;
     totalMaintenanceFee += st.maintenanceFeeOwed;
     maintenanceFeeCollected += st.maintenanceFeeCollected;
+    lateFeeCollected += st.lateFeePaid;
+    lateFeeOutstanding += st.lateFeeOutstanding;
   });
   const remainingDues = Math.max(0, yearlyTarget - collectedPrincipal);
   const progressPct = Math.min(100, (collectedPrincipal / yearlyTarget) * 100);
@@ -898,14 +919,14 @@ export default function App() {
   const exportMembersCSV = () => {
     const header = [
       "Name", "Shares", "Ownership %", "Total Received", "Expected Due", "Pending Due",
-      "Late Fee", "Maintenance Owed", "Maintenance Collected", "Equity", "Status",
+      "Late Fee Charged", "Late Fee Paid", "Late Fee Outstanding", "Maintenance Owed", "Maintenance Collected", "Equity", "Status",
     ];
     const rows = [header, ...members.map((m) => {
       const st = statsById[m.id];
       return [
         m.name, m.shares, st.ownership.toFixed(1),
         Math.round(st.paidPrincipal), Math.round(st.expectedDue), Math.round(st.pendingDue),
-        Math.round(st.lateFee), Math.round(st.maintenanceFeeOwed), Math.round(st.maintenanceFeeCollected),
+        Math.round(st.lateFee), Math.round(st.lateFeePaid), Math.round(st.lateFeeOutstanding), Math.round(st.maintenanceFeeOwed), Math.round(st.maintenanceFeeCollected),
         Math.round(st.equity), st.status,
       ];
     })];
@@ -1133,6 +1154,11 @@ export default function App() {
   const doSetLateFee = async (memberId, amount) => {
     const member = members.find((m) => m.id === memberId);
     const oldAmount = lateFees[memberId] || 0;
+    const alreadyPaid = lateFeesPaid[memberId] || 0;
+    if (amount < alreadyPaid) {
+      showToast(`Can't go below the ${fmt(alreadyPaid)} already paid`);
+      return;
+    }
     const { error } = await supabase
       .from("late_fees")
       .upsert({ member_id: memberId, amount }, { onConflict: "member_id" });
@@ -1142,6 +1168,30 @@ export default function App() {
     logActivity(`Late fee for ${name}: ${fmt(oldAmount)} → ${fmt(amount)}`);
     if (amount > oldAmount) {
       notifyAll("Penalty Charged", `${name} was charged a ${fmt(amount - oldAmount)} penalty`);
+    }
+  };
+
+  // Records how much late fee a member has actually PAID (a running total,
+  // like Edit Late Fee). It never touches the monthly payments table, so it
+  // can't count as an installment or shrink anyone's pending dues.
+  const doSetLateFeePaid = async (memberId, totalPaid) => {
+    const member = members.find((m) => m.id === memberId);
+    const charged = lateFees[memberId] || 0;
+    const oldPaid = lateFeesPaid[memberId] || 0;
+    if (totalPaid < 0) { showToast("Amount can't be negative"); return false; }
+    if (totalPaid > charged) {
+      showToast(`Only ${fmt(charged)} was charged — can't record more than that`);
+      return false;
+    }
+    const { error } = await supabase
+      .from("late_fees")
+      .upsert({ member_id: memberId, amount: charged, paid: totalPaid }, { onConflict: "member_id" });
+    if (error) { showToast("Couldn't record late fee payment"); return false; }
+    showToast("Late fee payment recorded");
+    const name = member ? member.name : "a member";
+    logActivity(`Late fee paid by ${name}: ${fmt(oldPaid)} → ${fmt(totalPaid)} (outstanding ${fmt(charged - totalPaid)})`);
+    if (totalPaid > oldPaid) {
+      notifyAll("Late Fee Paid", `${fmt(totalPaid - oldPaid)} — ${name}`);
     }
   };
 
@@ -1316,6 +1366,8 @@ export default function App() {
             progressPct={progressPct}
             totalPendingDues={totalPendingDues}
             penaltyPool={penaltyPool}
+            lateFeeCollected={lateFeeCollected}
+            lateFeeOutstanding={lateFeeOutstanding}
             elapsed={elapsed}
             members={members}
             totalShares={totalShares}
@@ -1406,6 +1458,7 @@ export default function App() {
           isAdmin={isAdmin}
           onClose={() => setSelectedMember(null)}
           onEditLateFee={() => setModal({ type: "editLateFee", payload: selectedMember })}
+          onRecordLateFeePaid={() => setModal({ type: "editLateFeePaid", payload: selectedMember })}
           onEditShares={() => setModal({ type: "editShares", payload: selectedMember })}
           onEditMonth={(month) => setModal({ type: "editPayment", payload: { member: selectedMember, month } })}
           onUploadReceipt={(monthKey, file) => doUploadReceipt(selectedMember, monthKey, file)}
@@ -1461,6 +1514,18 @@ export default function App() {
           onSave={async (val) => { await doSetLateFee(modal.payload.id, val); setModal(null); }}
         />
       )}
+      {modal?.type === "editLateFeePaid" && (
+        <EditNumberModal
+          title="Record Late Fee Payment"
+          label={`Total late fee paid by ${modal.payload.name} so far (charged ${fmt(lateFees[modal.payload.id] || 0)}). Unpaid remainder is deducted from equity.`}
+          initial={lateFeesPaid[modal.payload.id] || 0}
+          onClose={() => setModal(null)}
+          onSave={async (val) => {
+            const ok = await doSetLateFeePaid(modal.payload.id, val);
+            if (ok !== false) setModal(null);
+          }}
+        />
+      )}
       {modal?.type === "editShares" && (
         <EditNumberModal
           title="Edit Shares"
@@ -1495,8 +1560,8 @@ export default function App() {
             const existing = payments[modal.payload.member.id]?.[modal.payload.month.key] || 0;
             const base = `${modal.payload.member.name} — ${modal.payload.month.label} ${modal.payload.month.year}`;
             return existing > 0
-              ? `${base} (currently ${fmt(existing)} recorded — enter the NEW amount received; oldest unpaid month gets settled first)`
-              : `${base} — amount received now (oldest unpaid month gets settled first)`;
+              ? `${base} (currently ${fmt(existing)} recorded — enter the NEW installment amount received; oldest unpaid month gets settled first. Late fees are recorded separately.)`
+              : `${base} — installment amount received now (oldest unpaid month gets settled first. Late fees are recorded separately.)`;
           })()}
           initial={0}
           allowClear
@@ -1589,7 +1654,7 @@ function parseActivityEntry(entry) {
 }
 
 function OverviewTab({
-  collectedPrincipal, progressPct, totalPendingDues, penaltyPool, elapsed,
+  collectedPrincipal, progressPct, totalPendingDues, penaltyPool, lateFeeCollected, lateFeeOutstanding, elapsed,
   members, totalShares, yearlyTarget, remainingDues, monthlyTotals,
   totalMaintenanceFee, maintenanceFeeCollected,
   maintenanceExpenses, onAddExpense, onDeleteExpense,
@@ -1603,7 +1668,10 @@ function OverviewTab({
   members.forEach((m) => { memberById[m.id] = m; });
   const totalMaintenanceSpent = maintenanceExpenses.reduce((s, e) => s + Number(e.amount), 0);
   const totalInterest = bankInterest.reduce((s, i) => s + Number(i.amount), 0);
-  const actualBankBalance = (collectedPrincipal + totalInterest) - totalMaintenanceSpent;
+  // Late fees paid in cash are real money in the bank, but they're tracked
+  // apart from installments, so they're added here explicitly rather than
+  // hiding inside collectedPrincipal.
+  const actualBankBalance = (collectedPrincipal + lateFeeCollected + totalInterest) - totalMaintenanceSpent;
   const thisMonthCollected = monthlyTotals[Math.max(0, elapsed - 1)]?.receivedValue || 0;
   const visibleNotices = showAllNotices ? notices : notices.slice(0, 2);
 
@@ -1710,6 +1778,7 @@ function OverviewTab({
       {/* Actual Bank Balance */}
       <BankBalanceCard
         collectedPrincipal={collectedPrincipal}
+        lateFeeCollected={lateFeeCollected}
         totalInterest={totalInterest}
         totalMaintenanceSpent={totalMaintenanceSpent}
         actualBankBalance={actualBankBalance}
@@ -1717,6 +1786,13 @@ function OverviewTab({
         isAdmin={isAdmin}
         onAddInterest={onAddInterest}
         onDeleteInterest={onDeleteInterest}
+      />
+
+      {/* Late fees — fully separate from installments and pending dues */}
+      <LateFeeSummaryCard
+        charged={penaltyPool}
+        collected={lateFeeCollected}
+        outstanding={lateFeeOutstanding}
       />
 
       {/* Collection Overview + Maintenance Fee & Ledger */}
@@ -2950,8 +3026,37 @@ function MonthComparisonStat({ monthlyTotals }) {
 
 /* ---------------- Actual Bank Balance ---------------- */
 
+function LateFeeSummaryCard({ charged, collected, outstanding }) {
+  if (!(charged > 0)) return null;
+  const Cell = ({ label, value, color }) => (
+    <div style={{ textAlign: "center", minWidth: 0 }}>
+      <div style={{ fontSize: 10.5, color: "#8b93a7", marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 800, color }}>{value}</div>
+    </div>
+  );
+  return (
+    <div className="bff-card" style={{ padding: 18, marginBottom: 14, border: "1px solid rgba(248,113,113,0.2)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <AlertTriangle size={15} color="#f87171" />
+        <span style={{ fontSize: 12, letterSpacing: 0.6, color: "#8b93a7", fontWeight: 700, textTransform: "uppercase" }}>
+          Late Fees
+        </span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+        <Cell label="Charged" value={fmt(charged)} color="#f4f6fb" />
+        <Cell label="Collected" value={fmt(collected)} color="#34d399" />
+        <Cell label="Outstanding" value={fmt(outstanding)} color={outstanding > 0 ? "#f87171" : "#8b93a7"} />
+      </div>
+      <div style={{ fontSize: 10.5, color: "#5b6478", lineHeight: 1.45 }}>
+        Tracked separately — never counted as an installment or against Pending Dues.
+        Any outstanding amount is deducted from that member's equity automatically.
+      </div>
+    </div>
+  );
+}
+
 function BankBalanceCard({
-  collectedPrincipal, totalInterest, totalMaintenanceSpent, actualBankBalance,
+  collectedPrincipal, lateFeeCollected = 0, totalInterest, totalMaintenanceSpent, actualBankBalance,
   bankInterest, isAdmin, onAddInterest, onDeleteInterest,
 }) {
   const [showAdd, setShowAdd] = useState(false);
@@ -2989,6 +3094,7 @@ function BankBalanceCard({
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
         <MiniStatRow label="Collected Principal" value={fmt(collectedPrincipal)} />
+        <MiniStatRow label="+ Late Fees Collected" value={fmt(lateFeeCollected)} valueColor="#f5b942" />
         <MiniStatRow label="+ Interest Earned" value={fmt(totalInterest)} valueColor="#eab308" />
         <MiniStatRow label="− Maintenance Spent" value={fmt(totalMaintenanceSpent)} valueColor="#f87171" />
       </div>
@@ -3542,7 +3648,7 @@ function ActivityTab({ activityLog }) {
   );
 }
 
-function MemberDetailModal({ member, stats, tier, payments, receipts, badges, isAdmin, onClose, onEditLateFee, onEditShares, onEditMonth, onUploadReceipt, onRemoveReceipt }) {
+function MemberDetailModal({ member, stats, tier, payments, receipts, badges, isAdmin, onClose, onEditLateFee, onRecordLateFeePaid, onEditShares, onEditMonth, onUploadReceipt, onRemoveReceipt }) {
   return (
     <ModalShell onClose={onClose} align="bottom">
       <div style={{ padding: "22px 20px 28px" }}>
@@ -3574,7 +3680,7 @@ function MemberDetailModal({ member, stats, tier, payments, receipts, badges, is
           <SummaryRow icon={<Target size={15} />} label="Expected Due" value={fmt(stats.expectedDue)} color="#f4f6fb" />
           <SummaryRow icon={<Check size={15} />} label="Total Received" value={fmt(stats.paidPrincipal)} color="#34d399" />
           <SummaryRow icon={<AlertTriangle size={15} />} label="Pending Due" value={fmt(stats.pendingDue)} color="#f5b942" />
-          <SummaryRow icon={<Clock size={15} />} label="Late Fees" value={fmt(stats.lateFee)} color="#f87171" />
+          <SummaryRow icon={<Clock size={15} />} label="Late Fees Outstanding" value={fmt(stats.lateFeeOutstanding)} color="#f87171" />
           <SummaryRow icon={<TrendingUp size={15} />} label="Current Equity" value={fmtSigned(stats.equity)} color="#5bb8ff" />
         </div>
         {stats.maintenanceFeeCollected > 0 && (
@@ -3590,13 +3696,29 @@ function MemberDetailModal({ member, stats, tier, payments, receipts, badges, is
           <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#f87171", fontSize: 11.5, fontWeight: 800, letterSpacing: 0.6, marginBottom: 12 }}>
             <AlertTriangle size={14} /> LATE FEE / PENALTY
           </div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 6 }}>
             <div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: "#f87171" }}>{fmt(stats.lateFee)}</div>
-              <div style={{ fontSize: 12, color: "#8b93a7", marginTop: 2 }}>Current penalty contribution</div>
+              <div style={{ fontSize: 11, color: "#8b93a7", marginBottom: 3 }}>Charged</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#f4f6fb" }}>{fmt(stats.lateFee)}</div>
             </div>
-            {isAdmin && <button onClick={onEditLateFee} className="bff-editbtn">Edit Late Fee</button>}
+            <div>
+              <div style={{ fontSize: 11, color: "#8b93a7", marginBottom: 3 }}>Paid</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#34d399" }}>{fmt(stats.lateFeePaid)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: "#8b93a7", marginBottom: 3 }}>Outstanding</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: stats.lateFeeOutstanding > 0 ? "#f87171" : "#8b93a7" }}>{fmt(stats.lateFeeOutstanding)}</div>
+            </div>
           </div>
+          <div style={{ fontSize: 11.5, color: "#8b93a7", lineHeight: 1.4, marginTop: 8 }}>
+            Kept separate from installments. Any unpaid amount is deducted from equity automatically.
+          </div>
+          {isAdmin && (
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button onClick={onEditLateFee} className="bff-editbtn">Edit Late Fee</button>
+              <button onClick={onRecordLateFeePaid} className="bff-editbtn">Record Payment</button>
+            </div>
+          )}
         </div>
 
         <div style={{
